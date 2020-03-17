@@ -442,6 +442,19 @@ Next Obligation.
   - sq. econstructor. eauto.
 Qed.
 
+Program Definition flag_of_type (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (HΓ : ∥wf_local Sigma Gamma∥) (ty : PCUICAst.term) :
+  typing_result bool :=
+  (* Typing [ty] to get enough premises to call [is_arity] *)
+  mlet (_; _) <- @make_graph_and_infer _ _ HΣ Gamma HΓ ty ;;
+  mlet b <- is_arity Sigma _ Gamma _ ty _ ;;
+  if b : {_} + {_} then
+    ret true
+  else ret false.
+Next Obligation. sq; eauto. Qed.
+Next Obligation.
+  sq. left. eexists;eauto.
+Qed.
+
 Section Erase.
 
   Definition is_box c :=
@@ -523,11 +536,19 @@ Section Erase.
       ; erase Γ HΓ (tProd na b t) _ := ret E.tBox
       ; erase Γ HΓ (tLambda na b t) _ :=
                            t' <- erase (vass na b :: Γ) _ t;;
-                              ret (E.tLambda na t')
+                           let dummy := match (flag_of_type Σ HΣ Γ HΓ b) with
+                                       | Checked true => true
+                                       | _ => false
+                                       end in
+                           ret (E.tLambda (E.mkBindAnn na dummy) t')
       ; erase Γ HΓ (tLetIn na b t0 t1) _ :=
                               b' <- erase Γ HΓ b;;
-                                 t1' <- erase (vdef na b t0 :: Γ) _ t1;;
-                                 ret (E.tLetIn na b' t1')
+                              t1' <- erase (vdef na b t0 :: Γ) _ t1;;
+                              let dummy := match (flag_of_type Σ HΣ Γ HΓ t0) with
+                                           | Checked true => true
+                                           | _ => false
+                                           end in
+                              ret (E.tLetIn (E.mkBindAnn na dummy) b' t1')
       ; erase Γ HΓ (tApp f u) _ :=
                      f' <- erase Γ HΓ f;;
                         l' <- erase Γ HΓ u;;

@@ -288,6 +288,17 @@ Next Obligation.
     reflexivity. eauto using typing_wf_local.
 Qed.
 
+Program Definition flag_of_type (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (ty : PCUICAst.term)  (Ht : welltyped Sigma Gamma ty) :
+  typing_result bool :=
+  mlet b <- is_arity Sigma _ Gamma _ ty _ ;;
+  if b : {_} + {_} then
+    ret true
+  else ret false.
+Next Obligation. sq; eauto. Qed.
+Next Obligation. destruct Ht. sq. eauto using typing_wf_local. Qed.
+Next Obligation. left. assumption. Qed.
+
+
 (* Program Definition is_erasable (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (HΓ : ∥wf_local Sigma Gamma∥) (t : PCUICAst.term) : *)
 (*   typing_result ({∥isErasable Sigma Gamma t∥} +{∥(isErasable Sigma Gamma t -> False) × welltyped Sigma Gamma t∥}) := *)
 (*   mlet (T; _) <- @make_graph_and_infer _ _ HΣ Gamma HΓ t ;; *)
@@ -428,12 +439,20 @@ Section Erase.
       ; erase Γ (tConstruct kn k u) Ht _ := ret (E.tConstruct kn k)
       ; erase Γ (tProd na b t) Ht _ := ret E.tBox
       ; erase Γ (tLambda na b t) Ht _ :=
-                           t' <- erase (vass na b :: Γ) t _;;
-                              ret (E.tLambda na t')
-      ; erase Γ (tLetIn na b t0 t1) Ht _ :=
-                              b' <- erase Γ b _;;
-                                 t1' <- erase (vdef na b t0 :: Γ) t1 _;;
-                                 ret (E.tLetIn na b' t1')
+                     t' <- erase (vass na b :: Γ) t _;;
+                     let dummy := match (flag_of_type Σ HΣ Γ b _) with
+                                  | Checked true => true
+                                  | _ => false
+                                  end in
+                     ret (E.tLambda (E.mkBindAnn na dummy) t')
+       ; erase Γ (tLetIn na b t0 t1) Ht _ :=
+                     b' <- erase Γ b _;;
+                     t1' <- erase (vdef na b t0 :: Γ) t1 _;;
+                     let dummy := match (flag_of_type Σ HΣ Γ b _) with
+                                   | Checked true => true
+                                   | _ => false
+                                   end in
+                     ret (E.tLetIn (E.mkBindAnn na dummy) b' t1')
       ; erase Γ (tApp f u) Ht _ :=
                      f' <- erase Γ f _;;
                      l' <- erase Γ u _;;
@@ -465,6 +484,18 @@ Section Erase.
     destruct HΣ.
     eapply inversion_Lambda in X as (? & ? & ? & ? & ?) ; auto.
     exists x0; auto.
+  Qed.
+  Next Obligation.
+    destruct Ht as [A HA].
+    destruct HΣ.
+    eapply inversion_Lambda in HA as (? & ? & ? & ? & ?);auto.
+    eexists;eauto.
+  Qed.
+  Next Obligation.
+    destruct Ht as [A HA].
+    destruct HΣ.
+    eapply inversion_LetIn in HA as (? & ? & ? & ? & ?);auto.
+    eexists;eauto.
   Qed.
   Next Obligation. todo "inversion". Qed.
   Next Obligation. todo "inversion". Qed.
@@ -573,8 +604,8 @@ Transparent wf_reduction.
 Lemma erase_Some_typed {Σ wfΣ Γ t wft r} :
   erase Σ wfΣ Γ t wft = Checked r -> exists T, ∥Σ ;;; Γ |- t : T∥.
 Proof.
-  rewrite erase_equation_1.
-  destruct is_erasable; cbn; intros; try congruence. clear H.
+  rewrite erase_equation_1. 
+  destruct is_erasable; simpl; intros; try congruence. clear H.
   destruct a as [ [(? & ? &?)] | []]. exists x; sq; eauto.
   destruct wft as [i Hi]. exists i; sq; eauto.
 Qed.

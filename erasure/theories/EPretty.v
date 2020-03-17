@@ -29,7 +29,7 @@ Section print_term.
     | _ => None
     end.
 
-  Fixpoint decompose_lam (t : term) (n : nat) : (list name) * term :=
+  Fixpoint decompose_lam (t : term) (n : nat) : (list aname) * term :=
     match n with
     | 0 => ([], t)
     | S n =>

@@ -170,10 +170,10 @@ Section Wcbv.
   Definition eval_evals_ind :
     forall P : term -> term -> Prop,
       (forall a t t', eval a tBox -> P a tBox -> eval t t' -> P t t' -> eval (tApp a t) tBox -> P (tApp a t) tBox ) ->
-      (forall (f : term) (na : name) (b a a' res : term),
+      (forall (f : term) (na : aname) (b a a' res : term),
           eval f (tLambda na b) ->
           P f (tLambda na b) -> eval a a' -> P a a' -> eval (b {0 := a'}) res -> P (b {0 := a'}) res -> P (tApp f a) res) ->
-      (forall (na : name) (b0 b0' b1 res : term),
+      (forall (na : aname) (b0 b0' b1 res : term),
           eval b0 b0' -> P b0 b0' -> eval (b1 {0 := b0'}) res -> P (b1 {0 := b0'}) res -> P (tLetIn na b0 b1) res) ->
       (forall (c : ident) (decl : constant_body) (body : term),
           declared_constant Σ c decl ->

@@ -206,15 +206,21 @@ Local Ltac sq :=
          | H : ∥ _ ∥ |- _ => destruct H
          end; try eapply sq.
 
+Inductive kill_reason :=
+| KR_type
+| KR_prop.
+
 Program Definition is_erasable (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (t : PCUICAst.term) (Ht : welltyped Sigma Gamma t) :
-  typing_result ({∥isErasable Sigma Gamma t∥} +{∥(isErasable Sigma Gamma t -> False)∥}) :=
+  typing_result (({∥isErasable Sigma Gamma t∥} +{∥(isErasable Sigma Gamma t -> False)∥}) × option kill_reason) :=
   mlet (T; _) <- @type_of extraction_checker_flags Sigma _ _ Gamma t Ht ;;
   mlet b <- is_arity Sigma _ Gamma _ T _ ;;
   if b : {_} + {_} then
-    ret (left _)
+    ret (left _, Some KR_type)
   else mlet (K; _) <- @type_of extraction_checker_flags Sigma _ _ Gamma T _ ;;
        mlet (u;_) <- @reduce_to_sort _ Sigma _ Gamma K _ ;;
-      match Universe.is_prop u with true => ret (left _) | false => ret (right _) end
+      if bool_dec (Universe.is_prop u) true : {_} + {_}
+      then ret (left _, Some KR_prop)
+      else ret (right _, None)
 .
 Next Obligation. sq; eauto. Qed.
 Next Obligation.
@@ -424,10 +430,59 @@ Section Erase.
 
   End EraseMfix.
 
+  Lemma typing_result_inv {A : Type} te ty :
+    TypeError (A:=A) te = Checked ty -> False.
+  Proof.
+    intros H.
+    inversion H.
+  Qed.
+  
+  Lemma is_erasable_left_kr : forall Σ' HΣ' Γ t Ht res o_kr,
+    is_erasable Σ' HΣ' Γ t Ht = Checked (left res, o_kr) ->
+    exists kr, o_kr = Some kr.
+  Proof.
+    intros.
+    unfold is_erasable in *.
+    unfold bind in *. unfold typing_monad in *.
+    repeat destruct ?; simpl in *;try inversion H;eauto.
+    (* FIXME: the proof is finished but gives "stack overflow" on Qed *)
+  Admitted.
+
+  Ltac solve_erase :=
+    sq';
+    let X := fresh "X" in
+    match goal with
+    | [H : welltyped _ _ (tEvar _ _) |- _ ] =>
+      destruct H as [? X];
+      now eapply inversion_Evar in X
+    | [H : welltyped _ _ (tLambda _ _ _) |- _  ] =>
+      destruct H as [? X];
+      eapply inversion_Lambda in X as (? & ? & ? & ? & ?);auto;eexists;eauto
+    | [H : welltyped _ _ (tLetIn _ _ _ _) |- _ ] =>
+      destruct H as [? X];
+      eapply inversion_LetIn in X as (? & ? & ? & ? & ? & ?);auto;eexists;eauto
+    | [H : welltyped _ _ (tApp _ _) |- _ ] =>
+      destruct H as [? X];
+      eapply inversion_App in X as (? & ? & ? & ? & ? & ?);auto;eexists;eauto
+    | [H : welltyped _ _ (tCase _ _ _ _) |- _] =>
+      destruct H as [? X];
+      eapply inversion_Case in X as
+          (? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ?);auto;eexists;eauto
+    | [H : welltyped _ _ (tProj _ _)  |- _] =>
+      destruct H as [? X];
+      eapply inversion_Proj in X as
+          (? & ? & ? & ? & ? & ? & ? & ? & ?);auto;eexists;eauto
+    end.
+  
   Equations(noind) erase (Γ : context) (t : term) (Ht : welltyped Σ Γ t) : typing_result E.term :=
     erase Γ t Ht with (is_erasable Σ HΣ Γ t Ht) :=
     {
-      erase Γ _ Ht (Checked (left _)) := ret (E.tBox);
+      erase Γ _ Ht (Checked (left _, Some kr)) := ret (E.tBox) ;
+      erase Γ _ Ht (Checked (left _, None)) := ret (E.tBox) ;
+        (* match o_kr as o return o = o_kr -> _ with *)
+        (* | Some kr => fun (p : _ = o_kr) => ret (E.tBox) *)
+        (* | None => _ *)
+        (* end eq_refl; *)
       erase Γ _ Ht (TypeError t) := TypeError t ;
       erase Γ (tRel i) Ht _ := ret (E.tRel i) ;
       erase Γ (tVar n) Ht _ := ret (E.tVar n) ;
@@ -478,33 +533,18 @@ Section Erase.
                           mfix' <- erase_mfix (erase) Γ mfix;;
                                 ret (E.tCoFix mfix' n)
     }.
-  Next Obligation. todo "monad_map enhancement for erasing lists". Qed.
+  (* Local Obligation Tactic := idtac. *)
+  Solve All Obligations with intros;solve_erase.
+  (* Next Obligation. todo "monad_map enhancement for erasing lists". Qed. *)
+  (* Next Obligation. *)
+  (*   todo "the fact that [is_erasable] evaluates to [Checked (left _, None)] is misisng". *)
+  (* Qed. *)
   Next Obligation.
-    destruct Ht.
-    destruct HΣ.
-    eapply inversion_Lambda in X as (? & ? & ? & ? & ?) ; auto.
-    exists x0; auto.
+    todo "the fact that [b] is coming from branches is missing".
   Qed.
   Next Obligation.
-    destruct Ht as [A HA].
-    destruct HΣ.
-    eapply inversion_Lambda in HA as (? & ? & ? & ? & ?);auto.
-    eexists;eauto.
+    todo "where [t] is coming from?".
   Qed.
-  Next Obligation.
-    destruct Ht as [A HA].
-    destruct HΣ.
-    eapply inversion_LetIn in HA as (? & ? & ? & ? & ?);auto.
-    eexists;eauto.
-  Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
-  Next Obligation. todo "inversion". Qed.
 
 End Erase.
 
@@ -550,7 +590,6 @@ Proof.
                                         | [ H : TypeError _ = Checked _ |- _ ] => inv H
                                         | [ H : welltyped _ _ _ |- _ ] => destruct H as []
                                              end; sq; eauto).
-
   - repeat econstructor; eauto.
   - econstructor. econstructor. clear E.
     eapply inversion_Prod in X2 as (? & ? & ? & ? & ?) ; auto.
@@ -577,8 +616,8 @@ Proof.
   (*   eapply All2_All_mix_left. eassumption. eassumption. *)
   (*   intros. destruct H5. *)
   (*   destruct ?; inv e0. cbn. eauto. *)
-  - econstructor.
-    clear E.
+  - (* econstructor. *)
+    (* clear E. *)
     admit.
     (* destruct isdecl as (? & ? & ?). *)
     (* eapply elim_restriction_works_proj; eauto. intros. *)
@@ -606,7 +645,7 @@ Lemma erase_Some_typed {Σ wfΣ Γ t wft r} :
 Proof.
   rewrite erase_equation_1. 
   destruct is_erasable; simpl; intros; try congruence. clear H.
-  destruct a as [ [(? & ? &?)] | []]. exists x; sq; eauto.
+  destruct a as [ [[(? & ? &?)] | []] ?]. exists x; sq; eauto.
   destruct wft as [i Hi]. exists i; sq; eauto.
 Qed.
 

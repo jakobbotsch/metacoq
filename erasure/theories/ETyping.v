@@ -87,7 +87,7 @@ Definition is_constructor n ts :=
 
 Definition is_constructor_or_box n ts :=
   match List.nth_error ts n with
-  | Some tBox => true
+  | Some (tBox _) => true
   | Some a =>
     let (f, a) := decompose_app a in
     match f with

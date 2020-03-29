@@ -80,7 +80,7 @@ Section print_term.
 
   Fixpoint print_term (Γ : context) (top : bool) (inapp : bool) (t : term) {struct t} :=
   match t with
-  | tBox => "∎"
+  | tBox _ => "∎"
   | tRel n =>
     match nth_error Γ n with
     | Some {| decl_name := na |} =>

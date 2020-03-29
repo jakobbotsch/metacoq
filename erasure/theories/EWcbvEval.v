@@ -26,7 +26,7 @@ Local Ltac inv H := inversion H; subst.
 
 Definition atom t :=
   match t with
-  | tBox
+  | tBox _
   | tConstruct _ _
   | tCoFix _ _
   | tLambda _ _
@@ -63,10 +63,10 @@ Section Wcbv.
 
   Inductive eval : term -> term -> Prop :=
   (** Reductions *)
-  | eval_box a t t' :
-      eval a tBox ->
+  | eval_box a t t' r :
+      eval a (tBox r) ->
       eval t t' ->
-      eval (tApp a t) tBox
+      eval (tApp a t) (tBox r)
 
   (** Beta *)
   | eval_beta f na b a a' res :
@@ -88,10 +88,10 @@ Section Wcbv.
       eval (tCase (ind, pars) discr brs) res
 
   (** Singleton case on a proof *)
-  | eval_iota_sing ind pars discr brs n f res :
-      eval discr tBox ->
+  | eval_iota_sing ind pars discr brs n f res r :
+      eval discr (tBox r) ->
       brs = [ (n,f) ] ->
-      eval (mkApps f (repeat tBox n)) res ->
+      eval (mkApps f (repeat (tBox r) n)) res ->
       eval (tCase (ind, pars) discr brs) res
 
   (** Fix unfolding *)
@@ -143,9 +143,9 @@ Section Wcbv.
       eval (tProj (i, pars, arg) discr) res
 
   (** Proj *)
-  | eval_proj_box i pars arg discr :
-      eval discr tBox ->
-      eval (tProj (i, pars, arg) discr) tBox
+  | eval_proj_box i pars arg discr r :
+      eval discr (tBox r) ->
+      eval (tProj (i, pars, arg) discr) (tBox r)
 
   (** Atoms (non redex-producing heads) applied to values are values *)
   | eval_app_cong f f' a a' :
@@ -169,7 +169,7 @@ Section Wcbv.
   (* Scheme Minimality for eval Sort Type. *)
   Definition eval_evals_ind :
     forall P : term -> term -> Prop,
-      (forall a t t', eval a tBox -> P a tBox -> eval t t' -> P t t' -> eval (tApp a t) tBox -> P (tApp a t) tBox ) ->
+      (forall a t t' r, eval a (tBox r) -> P a (tBox r) -> eval t t' -> P t t' -> eval (tApp a t) (tBox r) -> P (tApp a t) (tBox r) ) ->
       (forall (f : term) (na : aname) (b a a' res : term),
           eval f (tLambda na b) ->
           P f (tLambda na b) -> eval a a' -> P a a' -> eval (b {0 := a'}) res -> P (b {0 := a'}) res -> P (tApp f a) res) ->
@@ -185,10 +185,10 @@ Section Wcbv.
           eval discr (mkApps (tConstruct ind c) args) ->
           P discr (mkApps (tConstruct ind c) args) ->
           eval (iota_red pars c args brs) res -> P (iota_red pars c args brs) res -> P (tCase (ind, pars) discr brs) res) ->
-      (forall ind pars discr brs n f res,
-          eval discr tBox -> P discr tBox ->
+      (forall ind pars discr brs n f res r,
+          eval discr (tBox r) -> P discr (tBox r) ->
           brs = [(n, f)] ->
-          eval (mkApps f (repeat tBox n)) res -> P (mkApps f (repeat tBox n)) res ->
+          eval (mkApps f (repeat (tBox r) n)) res -> P (mkApps f (repeat (tBox r) n)) res ->
           eval (tCase (ind, pars) discr brs) res -> P (tCase (ind, pars) discr brs) res
       ) ->
       (forall (i : inductive) (pars arg : nat) (discr : term) (args : list term) (k : nat)
@@ -196,9 +196,9 @@ Section Wcbv.
           eval discr (mkApps (tConstruct i k) args) ->
           P discr (mkApps (tConstruct i k) args) ->
           eval (nth (pars + arg) args tDummy) res -> P (nth (pars + arg) args tDummy) res -> P (tProj (i, pars, arg) discr) res) ->
-      (forall i pars arg discr,
-          eval discr tBox -> P discr tBox ->
-          eval (tProj (i, pars, arg) discr) tBox -> P (tProj (i, pars, arg) discr) tBox
+      (forall i pars arg discr r,
+          eval discr (tBox r) -> P discr (tBox r) ->
+          eval (tProj (i, pars, arg) discr) (tBox r) -> P (tProj (i, pars, arg) discr) (tBox r)
       ) ->
       (forall f (mfix : mfixpoint term) (idx : nat) (args args' : list term) (narg : nat) (fn res : term),
           eval f (tFix mfix idx) ->

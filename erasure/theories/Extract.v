@@ -15,10 +15,10 @@ Definition isErasable Σ Γ t := ∑ T, Σ ;;; Γ |- t : T × (isArity T + (∑ 
 Module E := EAst.
 
 
-Fixpoint mkAppBox c n :=
+Fixpoint mkAppBox c n r :=
   match n with
   | 0 => c
-  | S n => mkAppBox (E.tApp c E.tBox) n
+  | S n => mkAppBox (E.tApp c (E.tBox r)) n r
   end.
 
 Reserved Notation "Σ ;;; Γ |- s ⇝ℇ t" (at level 50, Γ, s, t at next level).
@@ -28,14 +28,14 @@ Inductive erases (Σ : global_env_ext) (Γ : context) : term -> E.term -> Prop :
   | erases_tVar : forall n : ident, Σ;;; Γ |- tVar n ⇝ℇ E.tVar n
   | erases_tEvar : forall (m m' : nat) (l : list term) (l' : list E.term),
                    All2 (erases Σ Γ) l l' -> Σ;;; Γ |- tEvar m l ⇝ℇ E.tEvar m' l'
-  | erases_tLambda : forall (na : name) (is_dummy : bool) (b t : term) (t' : E.term),
+  | erases_tLambda : forall (na : name) (r : option E.erasure_reason) (b t : term) (t' : E.term),
                      Σ;;; (vass na b :: Γ) |- t ⇝ℇ t' ->
-                     Σ;;; Γ |- tLambda na b t ⇝ℇ E.tLambda (E.mkBindAnn na is_dummy) t'
-  | erases_tLetIn : forall  (na : name) (is_dummy : bool) (t1 : term) (t1' : E.term)
+                     Σ;;; Γ |- tLambda na b t ⇝ℇ E.tLambda (E.mkBindAnn na r) t'
+  | erases_tLetIn : forall  (na : name) (r : option E.erasure_reason) (t1 : term) (t1' : E.term)
                       (T t2 : term) (t2' : E.term),
                     Σ;;; Γ |- t1 ⇝ℇ t1' ->
                     Σ;;; (vdef na t1 T :: Γ) |- t2 ⇝ℇ t2' ->
-                    Σ;;; Γ |- tLetIn na t1 T t2 ⇝ℇ E.tLetIn (E.mkBindAnn na is_dummy) t1' t2'
+                    Σ;;; Γ |- tLetIn na t1 T t2 ⇝ℇ E.tLetIn (E.mkBindAnn na r) t1' t2'
   | erases_tApp : forall (f u : term) (f' u' : E.term),
                   Σ;;; Γ |- f ⇝ℇ f' ->
                   Σ;;; Γ |- u ⇝ℇ u' -> Σ;;; Γ |- tApp f u ⇝ℇ E.tApp f' u'
@@ -72,7 +72,8 @@ Inductive erases (Σ : global_env_ext) (Γ : context) : term -> E.term -> Prop :
                          × Σ;;; Γ ,,, PCUICLiftSubst.fix_context mfix |-
                            dbody d ⇝ℇ E.dbody d') mfix mfix' ->
                     Σ;;; Γ |- tCoFix mfix n ⇝ℇ E.tCoFix mfix' n
-  | erases_box : forall t : term, isErasable Σ Γ t -> Σ;;; Γ |- t ⇝ℇ E.tBox where "Σ ;;; Γ |- s ⇝ℇ t" := (erases Σ Γ s t).
+  | erases_box : forall (t : term) (r : E.erasure_reason), isErasable Σ Γ t -> Σ;;; Γ |- t ⇝ℇ (E.tBox r)
+where "Σ ;;; Γ |- s ⇝ℇ t" := (erases Σ Γ s t).
 
 Definition erases_constant_body (Σ : global_env_ext) (cb : constant_body) (cb' : E.constant_body) :=
   match cst_body cb, E.cst_body cb' with

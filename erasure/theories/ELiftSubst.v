@@ -32,7 +32,7 @@ Fixpoint lift n k t : term :=
     let k' := List.length mfix + k in
     let mfix' := List.map (map_def (lift n k')) mfix in
     tCoFix mfix' idx
-  | tBox => t
+  | tBox _ => t
   | tVar _ => t
   | tConst _ => t
   | tConstruct _ _ => t

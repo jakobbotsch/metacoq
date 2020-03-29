@@ -382,14 +382,16 @@ Local Ltac sq :=
          end; try eapply sq.
 
 Program Definition is_erasable (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (HΓ : ∥wf_local Sigma Gamma∥) (t : PCUICAst.term) :
-  typing_result ({∥isErasable Sigma Gamma t∥} +{∥(isErasable Sigma Gamma t -> False) × welltyped Sigma Gamma t∥}) :=
+  typing_result ((∥isErasable Sigma Gamma t∥ × E.erasure_reason) + (∥(isErasable Sigma Gamma t -> False) × welltyped Sigma Gamma t∥)) :=
   mlet (T; _) <- @make_graph_and_infer _ _ HΣ Gamma HΓ t ;;
   mlet b <- is_arity Sigma _ Gamma _ T _ ;;
   if b : {_} + {_} then
-    ret (left _)
+    ret (inl (_, E.ER_type))
   else mlet (K; _) <-  @make_graph_and_infer _ _ HΣ Gamma HΓ T ;;
        mlet (u;_) <- @reduce_to_sort _ Sigma _ Gamma K _ ;;
-      match Universe.is_prop u with true => ret (left _) | false => ret (right _) end
+       match Universe.is_prop u with
+         true => ret (inl (_, E.ER_prop))
+       | false => ret (inr _) end
 .
 Next Obligation. sq; eauto. Qed.
 Next Obligation.
@@ -443,30 +445,40 @@ Next Obligation.
 Qed.
 
 Program Definition flag_of_type (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (HΓ : ∥wf_local Sigma Gamma∥) (ty : PCUICAst.term) :
-  typing_result bool :=
-  (* Typing [ty] to get enough premises to call [is_arity] *)
+  typing_result (option E.erasure_reason) :=
+  (* Typing [ty] to get enough premises to call [is_arity] and other functions requiring well-formedness.
+   CHECKME: maybe there is a better way? *)
   mlet (_; _) <- @make_graph_and_infer _ _ HΣ Gamma HΓ ty ;;
   mlet b <- is_arity Sigma _ Gamma _ ty _ ;;
   if b : {_} + {_} then
-    ret true
-  else ret false.
-Next Obligation. sq; eauto. Qed.
+    ret (Some E.ER_type)
+  else mlet (K; _) <-  @make_graph_and_infer _ _ HΣ Gamma HΓ ty ;;
+       mlet (u;_) <- @reduce_to_sort _ Sigma _ Gamma K _ ;;
+       match Universe.is_prop u with
+         true => ret (Some E.ER_prop)
+       | false => ret None end.
+Solve Obligations with (intros;sq;eauto).
 Next Obligation.
-  sq. left. eexists;eauto.
+  sq;left; eexists;eauto.
+Qed.
+Next Obligation.
+  sq. eapply validity in X. destruct X. destruct i. right. sq. apply i. left.
+  destruct i. econstructor. apply t.
+  apply X3. eauto using typing_wf_local.
 Qed.
 
 Section Erase.
 
   Definition is_box c :=
     match c with
-    | E.tBox => true
+    | E.tBox _ => true
     | _ => false
     end.
 
-  Fixpoint mkAppBox c n :=
+  Fixpoint mkAppBox c n r :=
     match n with
     | 0 => c
-    | S n => mkAppBox (E.tApp c E.tBox) n
+    | S n => mkAppBox (E.tApp c (E.tBox r)) n r
     end.
 
   Definition on_snd_map {A B C} (f : B -> C) (p : A * B) :=
@@ -523,32 +535,26 @@ Section Erase.
   Equations(noind) erase (Γ : context) (HΓ : ∥ wf_local Σ Γ ∥) (t : term) : typing_result E.term :=
     erase Γ HΓ t with (is_erasable Σ HΣ Γ HΓ t) :=
     {
-      erase Γ HΓ _ (Checked (left _)) := ret (E.tBox);
+      erase Γ HΓ _ (Checked (inl (_,r))) := ret (E.tBox r);
       erase Γ HΓ _ (TypeError t) := TypeError t ;
       erase Γ HΓ (tRel i) _ := ret (E.tRel i) ;
       erase Γ HΓ (tVar n) _ := ret (E.tVar n) ;
       erase Γ HΓ (tEvar m l) _ := l' <- monad_map (erase Γ HΓ) l;; ret (E.tEvar m l') ;
-      erase Γ HΓ (tSort u) _ := ret E.tBox
+      erase Γ HΓ (tSort u) _ := ret (E.tBox E.ER_type)
 
       ; erase Γ HΓ (tConst kn u) _ := ret (E.tConst kn)
-      ; erase Γ HΓ (tInd kn u) _ := ret E.tBox
+      ; erase Γ HΓ (tInd kn u) _ := ret (E.tBox E.ER_type)
       ; erase Γ HΓ (tConstruct kn k u) _ := ret (E.tConstruct kn k)
-      ; erase Γ HΓ (tProd na b t) _ := ret E.tBox
+      ; erase Γ HΓ (tProd na b t) _ := ret (E.tBox E.ER_type)
       ; erase Γ HΓ (tLambda na b t) _ :=
                            t' <- erase (vass na b :: Γ) _ t;;
-                           let dummy := match (flag_of_type Σ HΣ Γ HΓ b) with
-                                       | Checked true => true
-                                       | _ => false
-                                       end in
-                           ret (E.tLambda (E.mkBindAnn na dummy) t')
+                           r <- flag_of_type Σ HΣ Γ HΓ b ;;
+                           ret (E.tLambda (E.mkBindAnn na r) t')
       ; erase Γ HΓ (tLetIn na b t0 t1) _ :=
                               b' <- erase Γ HΓ b;;
                               t1' <- erase (vdef na b t0 :: Γ) _ t1;;
-                              let dummy := match (flag_of_type Σ HΣ Γ HΓ t0) with
-                                           | Checked true => true
-                                           | _ => false
-                                           end in
-                              ret (E.tLetIn (E.mkBindAnn na dummy) b' t1')
+                              r <- flag_of_type Σ HΣ Γ HΓ b ;;
+                              ret (E.tLetIn (E.mkBindAnn na r) b' t1')
       ; erase Γ HΓ (tApp f u) _ :=
                      f' <- erase Γ HΓ f;;
                         l' <- erase Γ HΓ u;;
@@ -568,7 +574,7 @@ Section Erase.
                                 ret (E.tCoFix mfix' n)
     }.
   Next Obligation.
-    destruct s0. destruct H. destruct w.
+    destruct s. destruct H. destruct w.
 
     sq'. econstructor; eauto. cbn.
 
@@ -576,7 +582,7 @@ Section Erase.
     econstructor; cbn; eauto.
   Qed.
   Next Obligation.
-    destruct s0. destruct H. destruct w.
+    destruct s. destruct H. destruct w.
     sq'. eapply inversion_LetIn in X as (? & ? & ? & ? & ? & ?) ; auto.
 
     econstructor; eauto.
@@ -672,7 +678,7 @@ Lemma erase_Some_typed {Σ wfΣ Γ wfΓ t r} :
 Proof.
   rewrite erase_equation_1.
   destruct is_erasable; cbn; intros; try congruence. clear H.
-  destruct a as [ [(? & ? &?)] | []]. exists x; sq; eauto.
+  destruct a as [ [[(? & ? & ?)]] | []]. exists x; sq; eauto.
   destruct H as [_ []]. exists A; sq; eauto.
 Qed.
 

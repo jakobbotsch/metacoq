@@ -25,15 +25,20 @@ Definition test_def {term : Set} (f : term -> bool) (d : def term) :=
 
 Definition mfixpoint (term : Set) := list (def term).
 
+(** We use these tags to provide information on why a particular term was erased to a box. We also use it in the annotations for binders *)
+Inductive erasure_reason :=
+| ER_type
+| ER_prop.
+
+
 (** Binders annotated with a "dummy" flag meaning that the the abstraction can be ignored in the extracted code *)
 Record aname :=
-  mkBindAnn { binder_name : name; binder_dummy : bool }.
+  mkBindAnn { binder_name : name; binder_erasure_reason : option erasure_reason }.
 
 Coercion aname_to_name := binder_name.
 
-
 Inductive term : Set :=
-| tBox       : term (* Represents all proofs *)
+| tBox       : erasure_reason -> term (* Represents all proofs *)
 | tRel       : nat -> term
 | tVar       : ident -> term (* For free variables (e.g. in a goal) *)
 | tEvar      : nat -> list term -> term

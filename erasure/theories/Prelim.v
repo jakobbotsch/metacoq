@@ -143,8 +143,8 @@ Proof.
   revert a; induction l; cbn; congruence.
 Qed.
 
-Lemma mkAppBox_repeat n a :
-  mkAppBox a n = EAst.mkApps a (repeat EAst.tBox n).
+Lemma mkAppBox_repeat n a r:
+  mkAppBox a n r = EAst.mkApps a (repeat (EAst.tBox r) n).
 Proof.
   revert a; induction n; cbn; firstorder congruence.
 Qed.
@@ -244,8 +244,8 @@ Proof.
   unfold decompose_app. simpl. now rewrite (IHt1 [t2]).
 Qed.
 
-Lemma value_app_inv L :
-  Ee.value (EAst.mkApps EAst.tBox L) ->
+Lemma value_app_inv L r :
+  Ee.value (EAst.mkApps (EAst.tBox r) L) ->
   L = nil.
 Proof.
   intros. depelim H.
@@ -258,7 +258,7 @@ Proof.
     eapply Ee.atom_mkApps in H' as [H1 _].
     destruct n, L; discriminate.
   - unfold Ee.isStuckFix in H0. destruct f; try now inversion H0.
-    assert (EAstUtils.decompose_app (EAst.mkApps (EAst.tFix m n) args) = EAstUtils.decompose_app (EAst.mkApps EAst.tBox L)) by congruence.
+    assert (EAstUtils.decompose_app (EAst.mkApps (EAst.tFix m n) args) = EAstUtils.decompose_app (EAst.mkApps (EAst.tBox r) L)) by congruence.
     rewrite !EAstUtils.decompose_app_mkApps in H1; eauto. inv H1.
 Qed.
 

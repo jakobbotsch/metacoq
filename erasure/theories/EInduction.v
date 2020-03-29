@@ -15,7 +15,7 @@ Set Asymmetric Patterns.
 
 Lemma term_forall_list_ind :
   forall P : term -> Prop,
-    (P tBox) ->
+    (forall r, P (tBox r)) ->
     (forall n : nat, P (tRel n)) ->
     (forall i : ident, P (tVar i)) ->
     (forall (n : nat) (l : list term), Forall P l -> P (tEvar n l)) ->

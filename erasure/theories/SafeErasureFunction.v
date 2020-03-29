@@ -206,21 +206,17 @@ Local Ltac sq :=
          | H : ∥ _ ∥ |- _ => destruct H
          end; try eapply sq.
 
-Inductive kill_reason :=
-| KR_type
-| KR_prop.
-
 Program Definition is_erasable (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (t : PCUICAst.term) (Ht : welltyped Sigma Gamma t) :
-  typing_result (({∥isErasable Sigma Gamma t∥} +{∥(isErasable Sigma Gamma t -> False)∥}) × option kill_reason) :=
+  typing_result ((∥isErasable Sigma Gamma t∥ × E.erasure_reason) + ∥(isErasable Sigma Gamma t -> False)∥) :=
   mlet (T; _) <- @type_of extraction_checker_flags Sigma _ _ Gamma t Ht ;;
   mlet b <- is_arity Sigma _ Gamma _ T _ ;;
   if b : {_} + {_} then
-    ret (left _, Some KR_type)
+    ret (inl ( _, E.ER_type))
   else mlet (K; _) <- @type_of extraction_checker_flags Sigma _ _ Gamma T _ ;;
        mlet (u;_) <- @reduce_to_sort _ Sigma _ Gamma K _ ;;
       if bool_dec (Universe.is_prop u) true : {_} + {_}
-      then ret (left _, Some KR_prop)
-      else ret (right _, None)
+      then ret (inl (_, E.ER_prop))
+      else ret (inr _)
 .
 Next Obligation. sq; eauto. Qed.
 Next Obligation.
@@ -294,15 +290,30 @@ Next Obligation.
     reflexivity. eauto using typing_wf_local.
 Qed.
 
-Program Definition flag_of_type (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (ty : PCUICAst.term)  (Ht : welltyped Sigma Gamma ty) :
-  typing_result bool :=
+ Program Definition flag_of_type (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (ty : PCUICAst.term)  (Ht : welltyped Sigma Gamma ty) :
+  typing_result (option E.erasure_reason) :=
   mlet b <- is_arity Sigma _ Gamma _ ty _ ;;
   if b : {_} + {_} then
-    ret true
-  else ret false.
-Next Obligation. sq; eauto. Qed.
-Next Obligation. destruct Ht. sq. eauto using typing_wf_local. Qed.
-Next Obligation. left. assumption. Qed.
+    ret (Some E.ER_type)
+  else mlet (K; _) <- @type_of extraction_checker_flags Sigma _ _ Gamma ty _ ;;
+       mlet (u;_) <- @reduce_to_sort _ Sigma _ Gamma K _ ;;
+       match Universe.is_prop u with
+         true => ret (Some E.ER_prop)
+       | false => ret None
+       end.
+Solve Obligations with (intros;sq;eauto).
+Next Obligation.
+  destruct Ht; sq;eauto using typing_wf_local.
+Qed.
+Next Obligation.
+  destruct Ht;sq;left; eexists;eauto.
+Qed.
+Next Obligation. sq;apply X. Qed.
+Next Obligation.
+  sq. eapply validity in X. destruct X. destruct i. right. sq. apply i. left.
+  destruct i. econstructor. apply t.
+  apply X1. eauto using typing_wf_local.
+Qed.
 
 
 (* Program Definition is_erasable (Sigma : PCUICAst.global_env_ext) (HΣ : ∥wf_ext Sigma∥) (Gamma : context) (HΓ : ∥wf_local Sigma Gamma∥) (t : PCUICAst.term) : *)
@@ -367,16 +378,16 @@ Next Obligation. left. assumption. Qed.
 
 Section Erase.
 
-  Definition is_box c :=
+  Definition is_box c : option E.erasure_reason :=
     match c with
-    | E.tBox => true
-    | _ => false
+    | E.tBox r => Some r
+    | _ => None
     end.
-
-  Fixpoint mkAppBox c n :=
+  
+  Fixpoint mkAppBox c n r :=
     match n with
     | 0 => c
-    | S n => mkAppBox (E.tApp c E.tBox) n
+    | S n => mkAppBox (E.tApp c (E.tBox r)) n r
     end.
 
   Definition on_snd_map {A B C} (f : B -> C) (p : A * B) :=
@@ -437,16 +448,16 @@ Section Erase.
     inversion H.
   Qed.
   
-  Lemma is_erasable_left_kr : forall Σ' HΣ' Γ t Ht res o_kr,
-    is_erasable Σ' HΣ' Γ t Ht = Checked (left res, o_kr) ->
-    exists kr, o_kr = Some kr.
-  Proof.
-    intros.
-    unfold is_erasable in *.
-    unfold bind in *. unfold typing_monad in *.
-    repeat destruct ?; simpl in *;try inversion H;eauto.
-    (* FIXME: the proof is finished but gives "stack overflow" on Qed *)
-  Admitted.
+  (* Lemma is_erasable_left_kr : forall Σ' HΣ' Γ t Ht res o_kr, *)
+  (*   is_erasable Σ' HΣ' Γ t Ht = Checked (left res, o_kr) -> *)
+  (*   exists kr, o_kr = Some kr. *)
+  (* Proof. *)
+  (*   intros. *)
+  (*   unfold is_erasable in *. *)
+  (*   unfold bind in *. unfold typing_monad in *. *)
+  (*   repeat destruct ?; simpl in *;try inversion H;eauto. *)
+  (*   (* FIXME: the proof is finished but gives "stack overflow" on Qed *) *)
+  (* Admitted. *)
 
   Ltac solve_erase :=
     sq';
@@ -454,6 +465,7 @@ Section Erase.
     match goal with
     | [H : welltyped _ _ (tEvar _ _) |- _ ] =>
       destruct H as [? X];
+      (* inversion on evar gives [False] *)
       now eapply inversion_Evar in X
     | [H : welltyped _ _ (tLambda _ _ _) |- _  ] =>
       destruct H as [? X];
@@ -477,55 +489,55 @@ Section Erase.
   Equations(noind) erase (Γ : context) (t : term) (Ht : welltyped Σ Γ t) : typing_result E.term :=
     erase Γ t Ht with (is_erasable Σ HΣ Γ t Ht) :=
     {
-      erase Γ _ Ht (Checked (left _, Some kr)) := ret (E.tBox) ;
-      erase Γ _ Ht (Checked (left _, None)) := ret (E.tBox) ;
-        (* match o_kr as o return o = o_kr -> _ with *)
-        (* | Some kr => fun (p : _ = o_kr) => ret (E.tBox) *)
-        (* | None => _ *)
-        (* end eq_refl; *)
-      erase Γ _ Ht (TypeError t) := TypeError t ;
-      erase Γ (tRel i) Ht _ := ret (E.tRel i) ;
-      erase Γ (tVar n) Ht _ := ret (E.tVar n) ;
-      erase Γ (tEvar m l) Ht _ := l' <- monad_map (fun x => erase Γ x _) l;; ret (E.tEvar m l') ;
-      erase Γ (tSort u) Ht _ := ret E.tBox
+      erase Γ _ Ht (Checked (inl (_,r))) := ret (E.tBox r)
+      ; erase Γ _ Ht (TypeError t) := TypeError t
+      ; erase Γ (tRel i) Ht _ := ret (E.tRel i)
+      ; erase Γ (tVar n) Ht _ := ret (E.tVar n)
+      ; erase Γ (tEvar m l) Ht _ := l' <- monad_map (fun x => erase Γ x _) l;; ret (E.tEvar m l')
+      ; erase Γ (tSort u) Ht _ := ret (E.tBox E.ER_type) (* CHECKME: this case never happens? *)
 
       ; erase Γ (tConst kn u) Ht _ := ret (E.tConst kn)
-      ; erase Γ (tInd kn u) Ht _ := ret E.tBox
+      ; erase Γ (tInd kn u) Ht _ := ret (E.tBox E.ER_type)
       ; erase Γ (tConstruct kn k u) Ht _ := ret (E.tConstruct kn k)
-      ; erase Γ (tProd na b t) Ht _ := ret E.tBox
+      ; erase Γ (tProd na b t) Ht _ := ret (E.tBox E.ER_type)
       ; erase Γ (tLambda na b t) Ht _ :=
                      t' <- erase (vass na b :: Γ) t _;;
-                     let dummy := match (flag_of_type Σ HΣ Γ b _) with
-                                  | Checked true => true
-                                  | _ => false
-                                  end in
-                     ret (E.tLambda (E.mkBindAnn na dummy) t')
+                     (* CHECKME: using [bind] below leads to stack overflow after the last Qed *)
+                     match (flag_of_type Σ HΣ Γ b _) with
+                     | Checked r => ret (E.tLambda (E.mkBindAnn na r) t')
+                     | TypeError e => TypeError e
+                     end
        ; erase Γ (tLetIn na b t0 t1) Ht _ :=
                      b' <- erase Γ b _;;
                      t1' <- erase (vdef na b t0 :: Γ) t1 _;;
-                     let dummy := match (flag_of_type Σ HΣ Γ b _) with
-                                   | Checked true => true
-                                   | _ => false
-                                   end in
-                     ret (E.tLetIn (E.mkBindAnn na dummy) b' t1')
+                     (* CHECKME: using [bind] below leads to stack overflow after the last Qed *)
+                     match flag_of_type Σ HΣ Γ b _ with
+                     | Checked r =>  ret (E.tLetIn (E.mkBindAnn na r) b' t1')
+                     | TypeError e => TypeError e
+                     end
       ; erase Γ (tApp f u) Ht _ :=
                      f' <- erase Γ f _;;
                      l' <- erase Γ u _;;
                      ret (E.tApp f' l')
       ; erase Γ (tCase ip p c brs) Ht _ :=
           c' <- erase Γ c _;;
-          if is_box c' then
-            match brs with
-            | (a, b) :: brs => b' <- erase Γ b _ ;; ret (E.mkApps b' (repeat E.tBox a))
-            | [] => ret (E.tCase ip c' [])
-            end
-          else
+          match (is_box c') with
+          | Some r =>
+            match brs as brs0 return brs0 = brs -> _ with
+            | (a, b) :: brs => fun p => b' <- erase Γ b _ ;;
+                                        ret (E.mkApps b' (repeat (E.tBox r) a))
+            | [] => fun p => ret (E.tCase ip c' [])
+            end eq_refl
+          | None =>
             brs' <- monad_map (T :=typing_result) (fun x => x' <- erase Γ (snd x) _;; ret (fst x, x')) brs;;
             ret (E.tCase ip c' brs')
+          end
       ; erase Γ (tProj p c) Ht _ :=
           c' <- erase Γ c _;;
-          if is_box c' then ret (E.tBox) else
-          ret (E.tProj p c')
+          match is_box c' with
+          | Some r => ret (E.tBox r)
+          | None => ret (E.tProj p c')
+          end
       ; erase Γ (tFix mfix n) Ht _ :=
           mfix' <- erase_mfix erase Γ mfix;;
           ret (E.tFix mfix' n)
@@ -533,17 +545,24 @@ Section Erase.
                           mfix' <- erase_mfix (erase) Γ mfix;;
                                 ret (E.tCoFix mfix' n)
     }.
-  (* Local Obligation Tactic := idtac. *)
+  Local Obligation Tactic := idtac.
   Solve All Obligations with intros;solve_erase.
-  (* Next Obligation. todo "monad_map enhancement for erasing lists". Qed. *)
-  (* Next Obligation. *)
-  (*   todo "the fact that [is_erasable] evaluates to [Checked (left _, None)] is misisng". *)
-  (* Qed. *)
   Next Obligation.
-    todo "the fact that [b] is coming from branches is missing".
+    intros.
+    sq'. destruct Ht as [? X1].
+    eapply inversion_Case in X1 as
+        (? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ?);auto.
+    subst. destruct p2 as [Hall ?].
+    inversion Hall;subst. simpl in *. destruct X0 as ( (? & ?) & ?).
+    eexists;eauto.
   Qed.
-  Next Obligation.
-    todo "where [t] is coming from?".
+  Next Obligation. 
+    intros.
+    sq'. destruct Ht as [? X1].
+    eapply inversion_Case in X1 as
+        (? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ?);auto.
+    (* TODO: We need access the branches here to be able to pass welltypedness argument for each call in [monad_map] *)
+    todo "monad_map enhancement for erasing lists".
   Qed.
 
 End Erase.
@@ -645,7 +664,7 @@ Lemma erase_Some_typed {Σ wfΣ Γ t wft r} :
 Proof.
   rewrite erase_equation_1. 
   destruct is_erasable; simpl; intros; try congruence. clear H.
-  destruct a as [ [[(? & ? &?)] | []] ?]. exists x; sq; eauto.
+  destruct a as [ [[(? & ? & ?)]]  | ]. eexists; sq; eauto.
   destruct wft as [i Hi]. exists i; sq; eauto.
 Qed.
 

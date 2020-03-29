@@ -235,7 +235,7 @@ Definition isConstruct t :=
 
 Definition isBox t :=
   match t with
-  | tBox => true
+  | tBox _ => true
   | _ => false
   end.
 
@@ -247,7 +247,7 @@ Definition string_of_def {A : Set} (f : A -> string) (def : def A) :=
 
 Fixpoint string_of_term (t : term) : string :=
   match t with
-  | tBox => "∎"
+  | tBox _ => "∎"
   | tRel n => "Rel(" ++ string_of_nat n ++ ")"
   | tVar n => "Var(" ++ n ++ ")"
   | tEvar ev args => "Evar(" ++ string_of_nat ev ++ "[]" (* TODO *)  ++ ")"

@@ -32,12 +32,12 @@ let time prefix f x =
   let () = Feedback.msg_debug (prefix ++ str " executed in: " ++ Pp.real (stop -. start) ++ str "s") in
   res
 
-let check env evm c =
+let check mode env evm c =
   Feedback.msg_debug (str"Quoting");
   let term = time (str"Quoting") (Ast_quoter.quote_term_rec env) (EConstr.to_constr evm c) in
   let checker_flags = Config0.extraction_checker_flags in
   let erase = time (str"Erasing")
-      (SafeTemplateErasure.erase_and_print_template_program checker_flags)
+      (SafeTemplateErasure.general_erase_and_print_template_program checker_flags mode)
       term
   in
   match erase with
@@ -50,6 +50,15 @@ VERNAC COMMAND EXTEND MetaCoqErase CLASSIFIED AS QUERY
     let env = Global.env () in
     let evm = Evd.from_env env in
     let (c, _) = Constrintern.interp_constr env evm c in
-    check env evm c
+    check EPretty.MPlain env evm c
+  }
+END
+
+VERNAC COMMAND EXTEND MetaCoqEraseAnnotate CLASSIFIED AS QUERY
+| [ "MetaCoq" "Erase" "Annotate" constr(c) ] -> {
+    let env = Global.env () in
+    let evm = Evd.from_env env in
+    let (c, _) = Constrintern.interp_constr env evm c in
+    check EPretty.MWithErasureReason env evm c
   }
 END

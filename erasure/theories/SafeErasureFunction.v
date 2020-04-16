@@ -511,7 +511,7 @@ Section Erase.
                      b' <- erase Γ b _;;
                      t1' <- erase (vdef na b t0 :: Γ) t1 _;;
                      (* CHECKME: using [bind] below leads to stack overflow after the last Qed *)
-                     match flag_of_type Σ HΣ Γ b _ with
+                     match flag_of_type Σ HΣ Γ t0 _ with
                      | Checked r =>  ret (E.tLetIn (E.mkBindAnn na r) b' t1')
                      | TypeError e => TypeError e
                      end

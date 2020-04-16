@@ -152,7 +152,7 @@ Local Open Scope string_scope.
 
 
 (** This uses the checker-based erasure *)
-Program Definition erase_and_print_template_program_check {cf : checker_flags} (p : Ast.program)
+Definition erase_and_print_template_program_check {cf : checker_flags} (p : Ast.program)
   : string + string :=
   let p := fix_program_universes p in
   match erase_template_program_check p return string + string with
@@ -166,18 +166,31 @@ Program Definition erase_and_print_template_program_check {cf : checker_flags} (
   end.
 
 (** This uses the retyping-based erasure *)
-Program Definition erase_and_print_template_program {cf : checker_flags} (p : Ast.program)
+Definition general_erase_and_print_template_program {cf : checker_flags}
+        (mode : print_mode) (p : Ast.program)
   : string + string :=
   let p := fix_program_universes p in
   match erase_template_program p return string + string with
   | CorrectDecl (Σ', t) =>
     inl ("Environment is well-formed and " ++ Pretty.print_term (Ast.empty_ext p.1) [] true p.2 ++
-         " erases to: " ++ nl ++ print_term Σ' [] true false t)
+         " erases to: " ++ nl ++ general_print_term Σ' mode  [] true false t)
   | EnvError Σ' (AlreadyDeclared id) =>
     inr ("Already declared: " ++ id)
   | EnvError Σ' (IllFormedDecl id e) =>
     inr ("Type error: " ++ PCUICSafeChecker.string_of_type_error Σ' e ++ ", while checking " ++ id)
   end.
+
+(** Prints boxes for all erased terms *)
+Definition erase_and_print_template_program {cf : checker_flags} (p : Ast.program)
+  : string + string
+  := general_erase_and_print_template_program MPlain p.
+
+(** Prints erasure reason for erased terms *)
+Definition erase_and_print_template_program_annot {cf : checker_flags} (p : Ast.program)
+  : string + string
+  := general_erase_and_print_template_program MWithErasureReason p.
+
+
 
 (* Program Definition check_template_program {cf : checker_flags} (p : Ast.program) (ty : Ast.term) *)
 (*   : EnvCheck (∥ trans_global (AstUtils.empty_ext (List.rev p.1)) ;;; [] |- trans p.2 : trans ty ∥) := *)

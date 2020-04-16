@@ -78,9 +78,22 @@ Section print_term.
     if is_fresh Γ id then nNamed id
     else nNamed (fresh_id_from Γ 10 id).
 
-  Fixpoint print_term (Γ : context) (top : bool) (inapp : bool) (t : term) {struct t} :=
+  Inductive print_mode :=
+  | MPlain
+  | MWithErasureReason.
+
+  Definition print_erasure_reason (r : erasure_reason) :=
+    match r with
+    | ER_type => "(TYPE)"
+    | ER_prop => "(PROP)"
+    end.
+
+  Fixpoint general_print_term (mode : print_mode) (Γ : context) (top : bool) (inapp : bool) (t : term) {struct t} :=
   match t with
-  | tBox _ => "∎"
+  | tBox r => match mode with
+             | MPlain => "∎"
+             | MWithErasureReason => print_erasure_reason r
+             end
   | tRel n =>
     match nth_error Γ n with
     | Some {| decl_name := na |} =>
@@ -94,15 +107,25 @@ Section print_term.
   | tEvar ev args => "Evar(" ++ string_of_nat ev ++ "[]" (* TODO *)  ++ ")"
   | tLambda na body =>
     let na' := fresh_name Γ na t in
-    parens top ("fun " ++ string_of_name na'
-                                ++ " => " ++ print_term (vass na' :: Γ) true false body)
+    let annot := match mode,na.(binder_erasure_reason) with
+                 | MPlain, _ => ""
+                 | MWithErasureReason, Some r => " : " ++ print_erasure_reason r
+                 | _,_ => ""
+                 end in
+    parens top ("fun " ++ string_of_name na' ++ annot
+                       ++ " => " ++ general_print_term mode (vass na' :: Γ) true false body)
   | tLetIn na def body =>
     let na' := fresh_name Γ na t in
-    parens top ("let " ++ string_of_name na' ++
-                      " := " ++ print_term Γ true false def ++ " in " ++ nl ++
-                      print_term (vdef na' def :: Γ) true false body)
+    let annot := match mode,na.(binder_erasure_reason) with
+                 | MPlain, _ => ""
+                 | MWithErasureReason, Some r => " : " ++ print_erasure_reason r
+                 | _,_ => ""
+                 end in
+    parens top ("let " ++ string_of_name na'  ++ annot ++
+                      " := " ++ general_print_term mode Γ true false def ++ " in " ++ nl ++
+                      general_print_term mode (vdef na' def :: Γ) true false body)
   | tApp f l =>
-    parens (top || inapp) (print_term Γ false true f ++ " " ++ print_term Γ false false l)
+    parens (top || inapp) (general_print_term mode Γ false true f ++ " " ++ general_print_term mode Γ false false l)
   | tConst c => c
   | tConstruct (mkInd i k as ind) l =>
     match lookup_ind_decl i k with
@@ -120,20 +143,20 @@ Section print_term.
     | Some oib =>
       let fix print_branch Γ arity br {struct br} :=
           match arity with
-            | 0 => "=> " ++ print_term Γ true false br
+            | 0 => "=> " ++ general_print_term mode Γ true false br
             | S n =>
               match br with
               | tLambda na B =>
                 let na' := fresh_name Γ na br in
                 string_of_name na' ++ "  " ++ print_branch (vass na' :: Γ) n B
-              | t => "=> " ++ print_term Γ true false br
+              | t => "=> " ++ general_print_term mode Γ true false br
               end
             end
         in
         let brs := map (fun '(arity, br) =>
                           print_branch Γ arity br) brs in
         let brs := combine brs oib.(ind_ctors) in
-        parens top ("match " ++ print_term Γ true false t ++
+        parens top ("match " ++ general_print_term mode Γ true false t ++
                     " with " ++ nl ++
                     print_list (fun '(b, (na, _, _)) => na ++ " " ++ b)
                     (nl ++ " | ") brs ++ nl ++ "end" ++ nl)
@@ -145,23 +168,27 @@ Section print_term.
     match lookup_ind_decl mind i with
     | Some oib =>
       match nth_error oib.(ind_projs) k with
-      | Some (na, _) => print_term Γ false false c ++ ".(" ++ na ++ ")"
+      | Some (na, _) => general_print_term mode Γ false false c ++ ".(" ++ na ++ ")"
       | None =>
         "UnboundProj(" ++ string_of_inductive ind ++ "," ++ string_of_nat i ++ "," ++ string_of_nat k ++ ","
-                       ++ print_term Γ true false c ++ ")"
+                       ++ general_print_term mode Γ true false c ++ ")"
       end
     | None =>
       "UnboundProj(" ++ string_of_inductive ind ++ "," ++ string_of_nat i ++ "," ++ string_of_nat k ++ ","
-                     ++ print_term Γ true false c ++ ")"
+                     ++ general_print_term mode Γ true false c ++ ")"
     end
 
 
   | tFix l n =>
-    parens top ("let fix " ++ print_defs print_term Γ l ++ nl ++
+    parens top ("let fix " ++ print_defs (general_print_term mode) Γ l ++ nl ++
                           " in " ++ List.nth_default (string_of_nat n) (map (string_of_name ∘ dname) l) n)
   | tCoFix l n =>
-    parens top ("let cofix " ++ print_defs print_term Γ l ++ nl ++
+    parens top ("let cofix " ++ print_defs (general_print_term mode) Γ l ++ nl ++
                               " in " ++ List.nth_default (string_of_nat n) (map (string_of_name ∘ dname) l) n)
   end.
+
+  Definition print_term := general_print_term MPlain.
+
+  Definition print_term_annot := general_print_term MWithErasureReason.
 
 End print_term.

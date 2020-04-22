@@ -19,3 +19,4 @@ theories/ErasureCorrectness.v
 theories/ErasureFunction.v
 theories/SafeErasureFunction.v
 theories/SafeTemplateErasure.v
+theories/Debox.v

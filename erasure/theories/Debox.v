@@ -112,7 +112,7 @@ Program Fixpoint erase_type (Σ : P.global_env_ext)
     | P.tLambda na t b => (* NOTE: assume that this is a type scheme, meaning that applied to enough args it ends up a type *)
       erase_type Σ HΣ (P.vass na t :: Γ) b _
     | P.tConst nm _ =>
-      (* NOTE: since the original term is well-typed, we know that the constant, applied to enough argument is a valid type (meaning that the constant is a type scheme), so, we just leave the constant name in the erased version *)
+      (* NOTE: since the original term is well-typed, we know that the constant, applied to enough arguments is a valid type (meaning that the constant is a type scheme), so, we just leave the constant name in the erased version *)
       ret (TConst nm)
     | P.tEvar _ _  | P.tCase _ _ _ _ | P.tProj _ _
     | P.tFix _ _ | P.tCoFix _ _ | P.tVar _ | P.tLetIn _ _ _ _
@@ -370,7 +370,7 @@ Fixpoint adjust_indices (g : list bool) (t : E.term) :=
   | E.tRel i => E.tRel (i - get_shift i g)
   | E.tEvar ev args => E.tEvar ev (List.map (adjust_indices g) args)
   | E.tLambda na M =>
-    (* we always push [false], bacuse we only adjust for top-level lambdas *)
+    (* we always push [false], because we only adjust for top-level lambdas *)
     E.tLambda na (adjust_indices (false :: g) M)
   | E.tApp u v => E.tApp (adjust_indices g u) (adjust_indices g v)
   | E.tLetIn na b b' =>

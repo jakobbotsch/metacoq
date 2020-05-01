@@ -381,6 +381,7 @@ Fixpoint adjust_indices (g : list bool) (t : E.term) :=
     E.tCase ind (adjust_indices g c) brs'
   | E.tProj p c => E.tProj p (adjust_indices g c)
   | E.tFix mfix idx =>
+    let g := (repeat false (length mfix) ++ g)%list in
     let mfix' := List.map (E.map_def (adjust_indices g)) mfix in
     E.tFix mfix' idx
   | E.tCoFix mfix idx =>

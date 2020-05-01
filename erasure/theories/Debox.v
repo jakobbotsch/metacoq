@@ -385,6 +385,7 @@ Fixpoint adjust_indices (g : list bool) (t : E.term) :=
     let mfix' := List.map (E.map_def (adjust_indices g)) mfix in
     E.tFix mfix' idx
   | E.tCoFix mfix idx =>
+    let g := (repeat false (length mfix) ++ g)%list in
     let comfix' := List.map (E.map_def (adjust_indices g)) mfix in
     E.tCoFix comfix' idx
   | E.tBox r => t

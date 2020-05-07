@@ -99,20 +99,21 @@ Definition boxed_prop (r : option E.erasure_reason) :=
   | _ => false
   end.
 
-(** The type erasure procedure. It produces a prenex type with some parts, corresponding to quantification over types and propositions, replaced with boxes. Fails for types that are not prenex or non-extractable dependent types (e.g. containing constructors of inductive types) *)
+(** The type erasure procedure. It produces a list of names used to bind type variables and a prenex type with some parts (corresponding to quantification over types and propositions) replaced with boxes. Fails for types that are not prenex or non-extractable dependent types (e.g. containing constructors of inductive types) *)
 Program Fixpoint erase_type (Σ : P.global_env_ext)
            (HΣ : ∥ PCUICTyping.wf_ext Σ ∥)
            (Γ : PCUICAst.context)
            (db : list (option nat)) (* for reindexing tRels in types *)
+           (names : list name) (* names of the binders in [tProd] for further printing *)
            (j : nat) (* how many binders we are under *)
            (l_arr : bool) (* [true] is we are erasing a domain of the function type*)
            (ty : P.term)
            (* TODO: we need to pass [isType] instead, but this requires to
              implement the function in a different way *)
            (Hty : welltyped Σ Γ ty)
-  : typing_result box_type :=
+  : typing_result (list name * box_type) :=
   match (flag_of_type Σ HΣ Γ ty Hty) with
-  | Checked (Some r) => ret (TBox r)
+  | Checked (Some r) => ret (names, TBox r)
   | TypeError (NotASort _) (* TODO: figure out how to get rid of this case*)
   | Checked None =>
     match ty with
@@ -120,39 +121,42 @@ Program Fixpoint erase_type (Σ : P.global_env_ext)
       (* we use well-typedness to provide a witness that there is something in the context *)
       let v := safe_nth Γ (exist i _) in
       match (nth_error db i) with
-      | Some (Some n) => ret (TRel n)
+      | Some (Some n) => ret (names, TRel n)
       | Some None => TypeError (Msg ("Variable " ++ string_of_name v.(decl_name) ++ " is not translated. Probably not a prenex type"))
       | _ => TypeError (Msg ("Variable " ++ string_of_name v.(decl_name) ++ " is not found in the translation context"))
       end
-    | P.tSort _ => ret (TBox E.ER_type)
+    | P.tSort _ => ret (names,TBox E.ER_type)
     | P.tProd na t b =>
       let wt_t := _ in
       let wt_b := _ in
       ft <- flag_of_type Σ HΣ Γ t wt_t ;;
       match flag_of_type Σ HΣ (P.vass na t :: Γ) b wt_b  with
-          | Checked (Some _) => ret (TBox E.ER_type)
+          | Checked (Some _) => ret (names, TBox E.ER_type)
           | Checked None =>
             (* we pass [true] flag to indicate that we translate the domain *)
-            t1 <- erase_type Σ HΣ Γ db j true t wt_t ;;
+            '(nms1, t1) <- erase_type Σ HΣ Γ db names j true t wt_t ;;
             (* if it is a binder for a type variable, e.g [forall A, ...] and we are in the codomain, we add current variable to the translation context [db], otherwise, we add [None], because it's either not a binder for a type variable or the type is not prenex. This guarantees that non-prenex types will fail *)
             let db' := if boxed_sort ft && (negb l_arr) then Some j :: db
                        else None :: db in
             (* we only count binders for type variables *)
             let j' := if boxed_sort ft then (1+j)%nat else j in
-            t2 <- erase_type Σ HΣ (P.vass na t :: Γ) db' j' l_arr b wt_b ;;
-            ret (TArr t1 t2)
+            '(nms2, t2) <- erase_type Σ HΣ (P.vass na t :: Γ) db' names j' l_arr b wt_b ;;
+            (* we keep track of the binders for types *)
+            let names' := if boxed_sort ft then (nms1++ [na] ++ nms2)%list
+                          else (nms1 ++ nms2)%list in
+            ret (names', TArr t1 t2)
           | TypeError te => TypeError te
       end
     | P.tApp t1 t2 =>
-      t1' <- erase_type Σ HΣ Γ db j l_arr t1 _ ;;
-      t2' <- erase_type Σ HΣ Γ db j l_arr t2 _ ;;
-      ret (TApp t1' t2')
-    | P.tInd ind _ => ret (TInd ind.(inductive_mind))
+      '(nms1, t1') <- erase_type Σ HΣ Γ db names j l_arr t1 _ ;;
+      '(nms2,t2') <- erase_type Σ HΣ Γ db names j l_arr t2 _ ;;
+      ret (nms1 ++ nms2, TApp t1' t2')%list
+    | P.tInd ind _ => ret (names,TInd ind.(inductive_mind))
     | P.tLambda na t b => (* NOTE: assume that this is a type scheme, meaning that applied to enough args it ends up a type *)
-      erase_type Σ HΣ (P.vass na t :: Γ) db j l_arr b _
+      erase_type Σ HΣ (P.vass na t :: Γ) db names j l_arr b _
     | P.tConst nm _ =>
       (* NOTE: since the original term is well-typed (need also to be a type!), we know that the constant, applied to enough arguments is a valid type (meaning that the constant is a type scheme), so, we just leave the constant name in the erased version *)
-      ret (TConst nm)
+      ret (names, TConst nm)
     | P.tEvar _ _  | P.tCase _ _ _ _ | P.tProj _ _
     | P.tFix _ _ | P.tCoFix _ _ | P.tVar _ | P.tLetIn _ _ _ _
     | P.tConstruct _ _ _ => TypeError (Msg ("Not supported type: " ++ string_of_term ty))
@@ -288,11 +292,11 @@ Fixpoint mk_arrsM (l : (list (typing_result box_type))) (codom : box_type) :=
 (* Qed. *)
 
 Program Definition erase_type_program (p : Ast.program)
-  : EnvCheck (EAst.global_context * box_type) :=
+  : EnvCheck (EAst.global_context * (list name * box_type)) :=
   let Σ := List.rev (trans_global (Ast.empty_ext p.1)).1 in
   G <- check_wf_env_only_univs Σ ;;
   Σ' <- wrap_error (empty_ext Σ) "erasure of the global context" (SafeErasureFunction.erase_global Σ _) ;;
-  t <- wrap_error (empty_ext Σ) ("During erasure of " ++ string_of_term (trans p.2)) (erase_type (empty_ext Σ) _ nil [] 0 false (trans p.2) _);;
+  t <- wrap_error (empty_ext Σ) ("During erasure of " ++ string_of_term (trans p.2)) (erase_type (empty_ext Σ) _ nil [] [] 0 false (trans p.2) _);;
   ret (Monad:=envcheck_monad) (Σ', t).
 Next Obligation.
   unfold trans_global.
@@ -312,7 +316,7 @@ Definition erase_and_print_type {cf : checker_flags} (after_erasure : box_type -
   let p := fix_program_universes p in
   match erase_type_program p return string + string with
   | CorrectDecl (Σ', t) =>
-    let t' := after_erasure t in
+    let t' := after_erasure t.2 in
     inl ("Environment is well-formed and " ++ Pretty.print_term (Ast.empty_ext p.1) [] true p.2 ++
          " erases to: " ++ nl ++ print_box_type t')
   | EnvError Σ' (AlreadyDeclared id) =>
@@ -337,7 +341,8 @@ Recursive Extraction ex3.
 
 (** Erasing and deboxing *)
 Quote Recursively Definition ex4 :=
-  (forall (A : Type), A ->forall (B : Type), B -> A).
+  (forall (A : Type), A ->forall (B : Type) (C : Type), B -> C).
+Compute erase_type_program ex4.
 Compute erase_and_print_type id ex4.
 Compute erase_and_print_type debox_box_type ex4.
 
@@ -349,6 +354,7 @@ Compute erase_and_print_type id ex5_fail.
 Definition non_neg := {n : nat | 0 < n}.
 
 Quote Recursively Definition ex6 := (forall (A : Type), {n : nat | 0 < n} -> A).
+Compute erase_type_program ex6.
 Compute erase_and_print_type debox_box_type ex6.
 
 Fixpoint lookup_env (Σ : P.global_env) (id : ident) : option P.global_decl :=
@@ -583,8 +589,8 @@ Program Definition is_logargs_applied_const (Σ : P.global_env_ext)
            (const : ident) (n_app : nat) : typing_result bool :=
   match lookup_const Σ const with
   | Some b =>
-    ety <- erase_type Σ HΣ Γ [] 0 false b.(P.cst_type) _ ;;
-    let (dom, _) := decompose_arr ety in
+    ety <- erase_type Σ HΣ Γ [] [] 0 false b.(P.cst_type) _ ;;
+    let (dom, _) := decompose_arr ety.2 in
     match last_box_index dom with
     | Some i => ret (Nat.leb (i+1) n_app)
     | None => ret true

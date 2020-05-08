@@ -151,7 +151,10 @@ Program Fixpoint erase_type (Σ : P.global_env_ext)
       '(nms1, t1') <- erase_type Σ HΣ Γ db names j l_arr t1 _ ;;
       '(nms2,t2') <- erase_type Σ HΣ Γ db names j l_arr t2 _ ;;
       ret (nms1 ++ nms2, TApp t1' t2')%list
-    | P.tInd ind _ => ret (names,TInd ind.(inductive_mind))
+    | P.tInd ind _ =>
+      decl <- lookup_ind_decl ind ;;
+      let oib := projT1 (projT2 decl) in
+      ret (names,TInd oib.(ind_name))
     | P.tLambda na t b => (* NOTE: assume that this is a type scheme, meaning that applied to enough args it ends up a type *)
       erase_type Σ HΣ (P.vass na t :: Γ) db names j l_arr b _
     | P.tConst nm _ =>
@@ -185,6 +188,7 @@ Next Obligation. easy. Qed.
 Next Obligation.
   clear dependent Heq_anonymous;solve_erase.
 Qed.
+
 
 Fixpoint debox_box_type (bt : box_type) : box_type :=
   match bt with
@@ -345,6 +349,9 @@ Quote Recursively Definition ex4 :=
 Compute erase_type_program ex4.
 Compute erase_and_print_type id ex4.
 Compute erase_and_print_type debox_box_type ex4.
+
+Quote Recursively Definition ex4' := (forall (A : 0 = 0 -> Type) (B : Type), option (A eq_refl) -> B).
+Compute erase_and_print_type debox_box_type ex4'.
 
 Quote Recursively Definition ex5_fail :=
   (forall (A : Type), (forall (B : Type), B -> B) -> A).

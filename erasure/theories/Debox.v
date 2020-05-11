@@ -1,10 +1,10 @@
-From Coq Require Import Bool String Program List.
+From Coq Require Import Bool String Ascii Program List.
 From MetaCoq.Template Require Import config monad_utils utils uGraph Pretty All.
 From MetaCoq.PCUIC Require Import PCUICAst PCUICAstUtils PCUICTyping
      TemplateToPCUIC PCUICInversion.
 From MetaCoq.SafeChecker Require Import PCUICSafeReduce PCUICSafeChecker
      SafeTemplateChecker.
-From MetaCoq.Erasure Require ErasureFunction EAstUtils.
+From MetaCoq.Erasure Require ErasureFunction EAstUtils EPretty.
 From MetaCoq.Erasure Require Import SafeErasureFunction SafeTemplateErasure.
 
 Module EF := ErasureFunction.
@@ -25,7 +25,7 @@ Inductive box_type :=
 | TArr (dom : box_type) (codom : box_type)
 | TApp (_ : box_type) (_ : box_type)
 | TRel (_ : nat)
-| TInd (_ : ident)
+| TInd (_ : inductive)
 | TConst (_ : ident).
 
 Definition is_arr (bt : box_type) : bool :=
@@ -34,13 +34,42 @@ Definition is_arr (bt : box_type) : bool :=
   | _ => false
   end.
 
-Fixpoint print_box_type (bt : box_type) :=
+Fixpoint tokenize_aux (buffer : string) (sep : ascii) (s : string) : list string :=
+  match s with
+  | EmptyString => if (buffer =? EmptyString)%string then []
+                  else [buffer]
+  | String c tl =>
+    if Ascii.eqb c sep
+    then buffer :: tokenize_aux EmptyString sep tl
+    else tokenize_aux (buffer ++ String c EmptyString) sep tl
+  end.
+
+Definition tokenize := tokenize_aux EmptyString.
+
+Definition split_kername (s : kername) : string * ident :=
+  let path_lst := tokenize "." s in
+  let (path,name) := chop (#|path_lst| - 1)path_lst in
+  (String.concat "." path, hd "" name).
+
+Eval lazy in (split_kername "Coq.ZArith.BinInt.Z.add").
+
+
+Fixpoint print_box_type (Σ : E.global_context) (bt : box_type) :=
   match bt with
   | TBox x => "□"
-  | TArr dom codom => parens (negb (is_arr dom)) (print_box_type dom) ++ " → " ++ print_box_type codom
-  | TApp t1 t2 => parens false (print_box_type t1 ++ " " ++ print_box_type t2)
+  | TArr dom codom => parens (negb (is_arr dom)) (print_box_type Σ dom) ++ " → " ++ print_box_type Σ codom
+  | TApp t1 t2 => parens false (print_box_type Σ t1 ++ " " ++ print_box_type Σ t2)
   | TRel i => "'a" ++ string_of_nat i
-  | TInd s => s
+  | TInd s =>
+    match EPretty.lookup_ind_decl Σ s.(inductive_mind) s.(inductive_ind) with
+    | Some oib =>
+      let (path,_) := split_kername s.(inductive_mind) in
+      path ++ "." ++ oib.(E.ind_name)
+    | None => "UndeclaredIductive(" ++ s.(inductive_mind)
+                                    ++ ","
+                                    ++ s.(inductive_mind)
+                                    ++ ")"
+    end
   | TConst s => s
   end.
 
@@ -154,7 +183,7 @@ Program Fixpoint erase_type (Σ : P.global_env_ext)
     | P.tInd ind _ =>
       decl <- lookup_ind_decl ind ;;
       let oib := projT1 (projT2 decl) in
-      ret (names,TInd oib.(ind_name))
+      ret (names,TInd ind)
     | P.tLambda na t b => (* NOTE: assume that this is a type scheme, meaning that applied to enough args it ends up a type *)
       erase_type Σ HΣ (P.vass na t :: Γ) db names j l_arr b _
     | P.tConst nm _ =>
@@ -322,7 +351,7 @@ Definition erase_and_print_type {cf : checker_flags} (after_erasure : box_type -
   | CorrectDecl (Σ', t) =>
     let t' := after_erasure t.2 in
     inl ("Environment is well-formed and " ++ Pretty.print_term (Ast.empty_ext p.1) [] true p.2 ++
-         " erases to: " ++ nl ++ print_box_type t')
+         " erases to: " ++ nl ++ print_box_type  Σ' t')
   | EnvError Σ' (AlreadyDeclared id) =>
     inr ("Already declared: " ++ id)
   | EnvError Σ' (IllFormedDecl id e) =>
@@ -350,6 +379,17 @@ Compute erase_type_program ex4.
 Compute erase_and_print_type id ex4.
 Compute erase_and_print_type debox_box_type ex4.
 
+(** Tesing mutual iductives *)
+Inductive tree (A : Set) : Set :=
+  node : A -> forest A -> tree A
+with forest (A : Set) : Set :=
+    leaf : A -> forest A
+  | cons : tree A -> forest A -> forest A.
+
+Quote Recursively Definition ex_mutual := (forall (A: Set), forest A -> tree A -> A).
+Compute erase_and_print_type debox_box_type ex_mutual.
+
+(* TODO : check why [eq_refl] is not erased *)
 Quote Recursively Definition ex4' := (forall (A : 0 = 0 -> Type) (B : Type), option (A eq_refl) -> B).
 Compute erase_and_print_type debox_box_type ex4'.
 

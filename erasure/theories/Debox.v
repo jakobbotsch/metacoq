@@ -460,57 +460,6 @@ Fixpoint debox_types (g : list bool) (t : E.term) :=
   | E.tConstruct _ _ => t
   end.
 
-(* TODO : should go to the EAstUtils module *)
-Fixpoint isConstruct_app (t : E.term) : bool :=
-  match (EUtils.decompose_app t).1 with
-  | E.tConstruct _ _  => true
-  | _ => false
-  end.
-
-(* TODO : should go to the EAstUtils module *)
-Fixpoint isConst_app (t : E.term) : bool :=
-  match (EUtils.decompose_app t).1 with
-  | E.tConst _ => true
-  | _ => false
-  end.
-
-
-SearchPattern (term -> bool).
-About isConst_app.
-
-(** Remove all boxes applied to global constants and contructors.
-    Assumes that constants applied to all logical arguments and constructors are fylly applied. *)
-Fixpoint debox_all (t : E.term) :=
-  match t with
-  | E.tRel i => E.tRel i
-  | E.tEvar ev args => E.tEvar ev (List.map debox_all args)
-  | E.tLambda na M => E.tLambda na (debox_all M)
-  | E.tApp u v =>
-    match v with
-    | E.tBox _ =>
-      if (isConstruct_app u || isConst_app u)
-      then debox_all u (* ignore the box if it's applied to a constructor or a global constant*)
-      else E.tApp (debox_all u) (debox_all v)
-    | _ => E.tApp (debox_all u) (debox_all v)
-    end
-  | E.tLetIn na b b' => E.tLetIn na (debox_all b) (debox_all b')
-  | E.tCase ind c brs =>
-    let brs' := List.map (on_snd debox_all) brs in
-    E.tCase ind (debox_all c) brs'
-  | E.tProj p c => E.tProj p (debox_all c)
-  | E.tFix mfix idx =>
-    let mfix' := List.map (E.map_def debox_all) mfix in
-    E.tFix mfix' idx
-  | E.tCoFix mfix idx =>
-    let comfix' := List.map (E.map_def debox_all) mfix in
-    E.tCoFix comfix' idx
-  | E.tBox r => t
-  | E.tVar _ => t
-  | E.tConst _ => t
-  | E.tConstruct _ _ => t
-  end.
-
-
 Fixpoint adjust_indices (g : list bool) (t : E.term) :=
   match t with
   | E.tRel i => E.tRel (i - get_shift i g)
@@ -540,25 +489,10 @@ Fixpoint adjust_indices (g : list bool) (t : E.term) :=
   | E.tConstruct _ _ => t
   end.
 
-Fixpoint decompose_arr (t : box_type) : list box_type × box_type :=
-  match t with
-  | TArr A B =>
-      let (dom, codom) := decompose_arr B in
-      (A :: dom, codom)
-  | _ => ([], t)
-  end.
-
-
 Definition keep (o : option E.erasure_reason) : bool :=
   match o with
   | Some _ => false
   | None   => true
-  end.
-
-Definition is_TBox (ty : box_type) :=
-  match ty with
-  | TBox x => true
-  | _ => false
   end.
 
 Fixpoint Edecompose_lam (t : E.term) : (list E.aname) × E.term :=
@@ -578,6 +512,68 @@ Definition debox_top_level (t : E.term) :=
   let filtered_params := rev (filter (keep ∘ E.binder_erasure_reason) params) in
   Eit_mkLambda filtered_params (adjust_indices bitmask body).
 
+Fixpoint Edecompose_lam_n (n : nat) (t : E.term) : list E.aname × E.term :=
+  match n, t with
+  | S n, E.tLambda name body =>
+    let (ns, b) := Edecompose_lam_n n body in
+    (name :: ns, b)
+  | _, _ => ([], t)
+  end.
+
+(* Essentially the same as debox_top_level, except uses the arity of the case
+   to only remove in the first n lambdas, and returns the new arity *)
+Definition debox_case_branch (n : nat) (t : E.term) : nat × E.term :=
+  let (params, body) := Edecompose_lam_n n t in
+  let bitmask := rev (map (negb ∘ keep ∘ E.binder_erasure_reason) params) in
+  let filtered_params := rev (filter (keep ∘ E.binder_erasure_reason) params) in
+  (length filtered_params, Eit_mkLambda filtered_params (adjust_indices bitmask body)).
+
+(* TODO : should go to the EAstUtils module *)
+Fixpoint isConstruct_app (t : E.term) : bool :=
+  match (EUtils.decompose_app t).1 with
+  | E.tConstruct _ _  => true
+  | _ => false
+  end.
+
+(* TODO : should go to the EAstUtils module *)
+Fixpoint isConst_app (t : E.term) : bool :=
+  match (EUtils.decompose_app t).1 with
+  | E.tConst _ => true
+  | _ => false
+  end.
+
+(** Remove all boxes applied to global constants and contructors.
+    Assumes that constants applied to all logical arguments and constructors are fylly applied. *)
+Fixpoint debox_all (t : E.term) :=
+  match t with
+  | E.tRel i => E.tRel i
+  | E.tEvar ev args => E.tEvar ev (List.map debox_all args)
+  | E.tLambda na M => E.tLambda na (debox_all M)
+  | E.tApp u v =>
+    match v with
+    | E.tBox _ =>
+      if (isConstruct_app u || isConst_app u)
+      then debox_all u (* ignore the box if it's applied to a constructor or a global constant*)
+      else E.tApp (debox_all u) (debox_all v)
+    | _ => E.tApp (debox_all u) (debox_all v)
+    end
+  | E.tLetIn na b b' => E.tLetIn na (debox_all b) (debox_all b')
+  | E.tCase ind c brs =>
+    let brs' := List.map (fun '(n, t) => debox_case_branch n (debox_all t)) brs in
+    E.tCase ind (debox_all c) brs'
+  | E.tProj p c => E.tProj p (debox_all c)
+  | E.tFix mfix idx =>
+    let mfix' := List.map (E.map_def debox_all) mfix in
+    E.tFix mfix' idx
+  | E.tCoFix mfix idx =>
+    let comfix' := List.map (E.map_def debox_all) mfix in
+    E.tCoFix comfix' idx
+  | E.tBox r => t
+  | E.tVar _ => t
+  | E.tConst _ => t
+  | E.tConstruct _ _ => t
+  end.
+
 Section DeboxTopLevelExamples.
   Definition x := E.mkBindAnn (nNamed "x") None.
   Definition y := E.mkBindAnn (nNamed "y") None.
@@ -594,6 +590,14 @@ Section DeboxTopLevelExamples.
     (E.tLambda x (E.tLambda y (E.tApp (E.tRel 1) (E.tRel 0)))).
   Proof. reflexivity. Qed.
 End DeboxTopLevelExamples.
+
+Fixpoint decompose_arr (t : box_type) : list box_type × box_type :=
+  match t with
+  | TArr A B =>
+      let (dom, codom) := decompose_arr B in
+      (A :: dom, codom)
+  | _ => ([], t)
+  end.
 
 Definition is_fully_applied_ctor (Σ : P.global_env)
            (ind : inductive)
@@ -622,6 +626,12 @@ Fixpoint last_option {A} (l : list A) : option A :=
   | [] => None
   | [a] => Some a
   | a :: (_ :: _) as l0 => last_option l0
+  end.
+
+Definition is_TBox (ty : box_type) :=
+  match ty with
+  | TBox x => true
+  | _ => false
   end.
 
 Definition last_box_index l := last_option (find_indices is_TBox l).

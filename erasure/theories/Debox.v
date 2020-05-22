@@ -24,7 +24,7 @@ Inductive box_type :=
 | TBox (_ : E.erasure_reason)
 | TArr (dom : box_type) (codom : box_type)
 | TApp (_ : box_type) (_ : box_type)
-| TRel (_ : nat)
+| TVar (_ : nat) (* Index of type variable *)
 | TInd (_ : inductive)
 | TConst (_ : ident).
 
@@ -59,7 +59,7 @@ Fixpoint print_box_type (Σ : E.global_context) (bt : box_type) :=
   | TBox x => "□"
   | TArr dom codom => parens (negb (is_arr dom)) (print_box_type Σ dom) ++ " → " ++ print_box_type Σ codom
   | TApp t1 t2 => parens false (print_box_type Σ t1 ++ " " ++ print_box_type Σ t2)
-  | TRel i => "'a" ++ string_of_nat i
+  | TVar i => "'a" ++ string_of_nat i
   | TInd s =>
     match EPretty.lookup_ind_decl Σ s.(inductive_mind) s.(inductive_ind) with
     | Some oib =>
@@ -150,7 +150,7 @@ Program Fixpoint erase_type (Σ : P.global_env_ext)
       (* we use well-typedness to provide a witness that there is something in the context *)
       let v := safe_nth Γ (exist i _) in
       match (nth_error db i) with
-      | Some (Some n) => ret (names, TRel n)
+      | Some (Some n) => ret (names, TVar n)
       | Some None => TypeError (Msg ("Variable " ++ string_of_name v.(decl_name) ++ " is not translated. Probably not a prenex type"))
       | _ => TypeError (Msg ("Variable " ++ string_of_name v.(decl_name) ++ " is not found in the translation context"))
       end
@@ -232,7 +232,7 @@ Fixpoint debox_box_type (bt : box_type) : box_type :=
     | TBox _ => debox_box_type ty1 (* we turn [(ty1 box)] into [ty1] *)
     | _ => TApp (debox_box_type ty1) (debox_box_type ty2)
     end
-  | TRel _ => bt
+  | TVar _ => bt
   | TInd _ => bt
   | TConst _ => bt
   end.
@@ -635,10 +635,6 @@ Definition is_TBox (ty : box_type) :=
   end.
 
 Definition last_box_index l := last_option (find_indices is_TBox l).
-
-Compute last_box_index
-        (decompose_arr (TArr (TBox (E.ER_type))
-                       ((TArr (TRel 0) (TArr (TBox (E.ER_type)) (TRel 1)))))).1.
 
 Program Definition is_logargs_applied_const (Σ : P.global_env_ext)
            (HΣ : ∥ PCUICTyping.wf_ext Σ ∥)

@@ -557,6 +557,39 @@ Proof.
   now apply value_app_inv in ev.
 Qed.
 
+Lemma wf_fixpoint_check_all Σ mfix i d :
+  wf_fixpoint Σ mfix ->
+  nth_error mfix i = Some d ->
+  ∑ ind, check_one_fix d = Some ind.
+Proof.
+  intros wf.
+  unfold wf_fixpoint in *.
+  destruct mfix; cbn in *; [congruence|].
+  destruct (check_one_fix _) eqn:check; [|congruence].
+  exists k.
+  destruct (map_option_out _) eqn:m; [|congruence].
+  eapply map_option_Some in m.
+  rewrite <- (map_id l) in m.
+  apply All2_map_inv in m.
+  destruct i; cbn in *.
+  - congruence.
+  - eapply All2_nth_error_Some in m as (? & ? & ?); [|eassumption].
+    apply Bool.andb_true_iff in wf.
+    destruct wf as (wf & _).
+    rewrite forallb_forall in wf.
+    apply nth_error_In in e.
+    apply wf in e.
+    apply eq_kername
+  apply All2_map_left in m.
+  eapply nth_map_option_out in m.
+  eapply map_option_out_All.
+  induction mfix; [easy|].
+  cbn in *.
+  constructor.
+  - destruct (check_one_fix a) eqn:checka; [|congruence].
+    cbn in *.
+  
+  
 Lemma erases_correct Σ t T t' v Σ' :
   extraction_pre Σ ->
   Σ;;; [] |- t : T ->
@@ -1136,6 +1169,24 @@ Proof.
            ++ eapply Forall2_length in H5.
               destruct o as [|(<- & ?)]; [left; congruence|right].
               split; [congruence|].
+              eapply PCUICValidity.inversion_mkApps in typ_stuck_fix as (? & typ_fix & _); eauto.
+              apply PCUICInductiveInversion.type_tFix_inv
+                in typ_fix
+                as (? & ? & ? & ((? & ?) & ?) & ?);
+                eauto.
+              unfold wf_fixpoint in i.
+              assert (∑ ind u, Σ;;; [] |- av : tInd ind u) as (? & ? & ?).
+              {
+                destruct mfix; cbn in *; [congruence|].
+                destruct (check_one_fix d0) eqn:check; [|congruence].
+                unfold check_one_fix in check.
+              unfold unfold_fix in e4.
+              rewrite nth in e4.
+              inversion e4; subst; clear e4.
+              apply inversion_Fix in typ_fix as (? & ? & ? & ? & ? & ? & ?); eauto.
+              unfo
+              eapply All_nth_error in a1 as (? & ?); [|eassumption].
+Lemma foo 
               todo "contradiction: av must be a constructor when axiom free".
         -- exists E.tBox.
            apply eval_to_mkApps_tBox_inv in H3 as ?; subst.

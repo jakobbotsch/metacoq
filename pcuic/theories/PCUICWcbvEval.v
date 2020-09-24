@@ -693,8 +693,165 @@ Section Wcbv.
         now rewrite <- mkApps_nested.
       * easy.
   Qed.
- 
+  
+  Derive NoConfusion for term.
+  (*
+  Inductive elim_mkApps_tConstruct_type
+    : inductive -> nat -> Instance.t -> list term -> term -> Type :=
+  | elim_mkApps_tConstruct_c i c u args :
+      elim_mkApps_tConstruct_type i c u args (mkApps (tConstruct i c u) args).
+
+  Lemma elim_mkApps_tConstruct i c u args :
+    elim_mkApps_tConstruct_type (
+  Print Instances NoConfusionPackage.
+*)
   Unset SsrRewrite.
+  
+  Axiom uip : forall {A} {a a' : A} (e e' : a = a'), e = e'.
+  
+  Set Equations Debug.
+  Lemma eval_unique' {t v v'} :
+    forall (ev1 : eval t v) (ev2 : eval t v'),
+      sigmaI (eval t) v ev1 = sigmaI (eval t) v' ev2.
+  Proof.
+    Local Ltac go :=
+      solve [
+          repeat
+            match goal with
+            | [H: _, H' : _ |- _] =>
+              specialize (H _ H');
+              try solve [apply (f_equal pr1) in H; cbn in *; solve_discr];
+              noconf H
+            end; easy].
+    intros ev.
+    revert v'.
+    depind ev; intros v' ev'.
+    - depelim ev'; go.
+    - depelim ev'; go.
+    - depelim ev'; try go.
+      pose proof (PCUICWeakeningEnv.declared_constant_inj _ _ isdecl isdecl0) as <-.
+      assert (body0 = body) as -> by congruence.
+      specialize (IHev _ ev'); noconf IHev.
+      f_equal.
+      f_equal; apply uip.
+    - depelim ev'; try go.
+      pose proof (PCUICWeakeningEnv.declared_constant_inj _ _ isdecl isdecl0) as <-.
+      f_equal.
+      f_equal; apply uip.
+    - depelim ev'; try go.
+      + specialize (IHev1 _ ev'1); noconf IHev1.
+        apply (f_equal pr1) in IHev1 as apps_eq; cbn in *.
+        apply mkApps_eq_inj in apps_eq as (eq1 & eq2); try easy.
+        noconf eq1.
+        noconf eq2.
+        specialize (IHev2 _ ev'2); noconf IHev2.
+        f_equal.
+        f_equal.
+        change (pr2 {| pr1 := mkApps (tConstruct ind c u) args; pr2 := ev1 |} =
+                pr2 {| pr1 := mkApps (tConstruct ind c u) args; pr2 := ev'1 |}).
+        rewrite IHev1.
+        destruct (mkApps (tConstruct ind c u) args).
+        all: noconf IHev1.
+        all: now repeat match goal with
+                    | [H: _ = _ |- _] => assert (H = eq_refl) as -> by now apply uip
+                    end.
+      + 
+
+        change (pr2 {| pr1 := mkApps (tConstruct ind c u) args; pr2 := ev1 |} =
+                pr2 {| pr1 := mkApps (tConstruct ind c u) args; pr2 := ev'1 |}).
+        destruct args using List.rev_ind.
+        * cbn in *.
+          noconf IHev1; subst.
+          assert (e' = eq_refl) as -> by now apply uip.
+          assert (e'0 = eq_refl) as -> by now apply uip.
+          now assert (e = eq_refl) as -> by now apply uip.
+        * rewrite <- (mkApps_nested (tConstruct ind c u) args [x]).
+          cbn.
+          cbn.
+          replace e' with (eq_refl by now apply uip.
+          cbn 
+        depelim IHev1.
+        Set Printing All.
+        destruct (mkApps (tConstruct ind c u)); noconf IHev1.
+        apply (f_equal_dep pr2) in IHev1.
+        subst.
+        noconf eq1.
+        Set Printing All.
+        revert ev1 ev'1 IHev1.
+        rewrite <- (proj1 apps_eq).
+        depelim ev'1.
+        noconf H.
+        noconf H0.
+        specialize (IHev2 _ ev'2); noconf IHev2.
+        now apply IHev2 in ev'2.
+      + apply eval_mkApps_tCoFix in ev1 as (? & ?); solve_discr.
+      + easy.
+    - depelim ev'.
+      + apply IHev1 in ev'1.
+        apply mkApps_eq_inj in ev'1 as (ev'1 & <-); try easy.
+        noconf ev'1.
+        replace a0 with a in * by congruence.
+        now apply IHev2 in ev'2.
+      + apply eval_mkApps_tCoFix in ev1 as (? & ?); solve_discr.
+      + easy.
+    - depelim ev'.
+      + apply IHev1 in ev'1; solve_discr.
+      + apply IHev1 in ev'1.
+        solve_discr.
+        rewrite e0 in e. noconf e.
+        apply IHev2 in ev'2. subst.
+        now apply IHev3 in ev'3.
+      + apply IHev1 in ev'1; solve_discr.
+        apply IHev2 in ev'2; subst.
+        rewrite e0 in e. noconf e. lia.
+      + apply IHev1 in ev'1.
+        subst f'.
+        rewrite isFixApp_mkApps in i by easy.
+        cbn in *.
+        now rewrite Bool.orb_true_r in i.
+      + easy.
+    - depelim ev'.
+      + apply IHev1 in ev'1; solve_discr.
+      + apply IHev1 in ev'1; solve_discr.
+        apply IHev2 in ev'2; subst.
+        rewrite e0 in e; noconf e. lia.
+      + apply IHev1 in ev'1; solve_discr.
+        now apply IHev2 in ev'2; subst.
+      + apply IHev1 in ev'1; subst.
+        rewrite isFixApp_mkApps in i by easy.
+        cbn in *.
+        now rewrite Bool.orb_true_r in i.
+      + easy.
+    - depelim ev'.
+      + apply eval_mkApps_tCoFix in ev'1 as (? & ?); solve_discr.
+      + solve_discr.
+        rewrite e0 in e.
+        noconf e.
+        now apply IHev in ev'.
+      + easy.
+    - depelim ev'.
+      + apply eval_mkApps_tCoFix in ev'1 as (? & ?); solve_discr.
+      + solve_discr.
+        rewrite e0 in e.
+        noconf e.
+        now apply IHev in ev'.
+      + easy.
+    - depelim ev'.
+      + now apply IHev1 in ev'1; subst.
+      + apply IHev1 in ev'1; subst.
+        rewrite isFixApp_mkApps in i by easy.
+        cbn in *.
+        now rewrite Bool.orb_true_r in i.
+      + apply IHev1 in ev'1; subst.
+        rewrite isFixApp_mkApps in i by easy.
+        cbn in *.
+        now rewrite Bool.orb_true_r in i.
+      + apply IHev1 in ev'1; subst.
+        now apply IHev2 in ev'2; subst.
+      + easy.
+    - now depelim ev'.
+  Qed.
+
   Lemma eval_deterministic {t v v'} :
     eval t v ->
     eval t v' ->
@@ -802,6 +959,26 @@ Section Wcbv.
     + easy.
   - now depelim ev'.
   Qed.
+  
+  Lemma eval_unique {t v} :
+    forall (ev1 ev2 : eval t v),
+      ev1 = ev2.
+  Proof.
+    intros ev1.
+    induction ev1; intros ev2.
+    - admit.
+    - admit.
+    - admit.
+    - admit.
+    - depelim ev2.
+      + pose proof (eval_deterministic ev1_1 ev2_1).
+        eapply mkApps_eq_inj in H as (eq1 & eq2); try easy.
+        subst.
+        revert ev2_1.
+        rewrite <- eq1.
+        rewrite <- eq1 in ev2_1.
+        rewrite <- H in ev2_1.
+        specialize (IHev1_1 ev2_1).
   Set SsrRewrite.
 
   Lemma eval_LetIn {n b ty t v} :

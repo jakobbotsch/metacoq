@@ -1,13 +1,14 @@
 TIMED ?=
 
-all: template-coq checker pcuic safechecker erasure examples
+all: template-coq checker pcuic bidirectional safechecker erasure examples
 
-.PHONY: all template-coq checker pcuic erasure install html clean mrproper .merlin test-suite translations
+.PHONY: all template-coq checker pcuic bidirectional erasure install html clean mrproper .merlin test-suite translations
 
 install: all
 	$(MAKE) -C template-coq install
 	$(MAKE) -C checker install
 	$(MAKE) -C pcuic install
+	$(MAKE) -C bidirectional install
 	$(MAKE) -C safechecker install
 	$(MAKE) -C erasure install
 	$(MAKE) -C translations install
@@ -16,6 +17,7 @@ uninstall: all
 	$(MAKE) -C template-coq uninstall
 	$(MAKE) -C checker uninstall
 	$(MAKE) -C pcuic uninstall
+	$(MAKE) -C bidirectional uninstall
 	$(MAKE) -C safechecker uninstall
 	$(MAKE) -C erasure uninstall
 	$(MAKE) -C translations uninstall
@@ -34,6 +36,7 @@ clean:
 	$(MAKE) -C template-coq clean
 	$(MAKE) -C checker clean
 	$(MAKE) -C pcuic clean
+	$(MAKE) -C bidirectional clean
 	$(MAKE) -C safechecker clean
 	$(MAKE) -C erasure clean
 	$(MAKE) -C examples clean
@@ -44,6 +47,7 @@ mrproper:
 	$(MAKE) -C template-coq mrproper
 	$(MAKE) -C pcuic mrproper
 	$(MAKE) -C safechecker mrproper
+	$(MAKE) -C bidirectional mrproper
 	$(MAKE) -C erasure mrproper
 	$(MAKE) -C checker mrproper
 	$(MAKE) -C examples mrproper
@@ -53,6 +57,7 @@ mrproper:
 .merlin:
 	$(MAKE) -C template-coq .merlin
 	$(MAKE) -C pcuic .merlin
+	$(MAKE) -C bidirectional .merlin
 	$(MAKE) -C safechecker .merlin
 	$(MAKE) -C erasure .merlin
 	$(MAKE) -C checker .merlin
@@ -62,6 +67,9 @@ template-coq:
 
 pcuic: template-coq
 	$(MAKE) -C pcuic
+
+bidirectional: template-coq pcuic
+	$(MAKE) -C bidirectional
 
 safechecker: template-coq pcuic
 	$(MAKE) -C safechecker

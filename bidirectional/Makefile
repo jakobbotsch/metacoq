@@ -1,6 +1,8 @@
-SED = `which gsed || which sed`
+all: theory
 
-all: theory # plugin
+#_CoqProject: _CoqProject.in metacoq-config
+#	cat metacoq-config > _CoqProject
+#	cat _CoqProject.in >> _CoqProject
 
 Makefile.bd: _CoqProject
 	coq_makefile -f _CoqProject -o Makefile.bd $(DEPS)
@@ -16,3 +18,10 @@ uninstall: theory
 
 clean: Makefile.bd
 	make -f Makefile.bd clean
+
+mrproper:
+	rm -f metacoq-config
+	rm -f Makefile.bd _CoqProject
+
+.merlin:
+	make -f Makefile.bd .merlin

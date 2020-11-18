@@ -28,23 +28,6 @@ Add Search Blacklist "obligation".
 
 Require Import ssreflect.
 
-Lemma cumul_Ind_Ind_inv {cf:checker_flags} {Σ : global_env_ext} {wfΣ : wf Σ} {Γ ind u args ind' u' args'} : 
-  Σ ;;; Γ |- mkApps (tInd ind u) args <= mkApps (tInd ind' u') args' ->
-  eq_inductive ind ind' *
-  PCUICEquality.R_global_instance Σ (eq_universe Σ) (leq_universe Σ) (IndRef ind) #|args| u u' *
-  All2 (conv Σ Γ) args args'.
-Proof.
-  intros cum.
-  eapply invert_cumul_ind_l in cum as [ui' [l' [redl [ru conv]]]]; auto.
-  eapply red_mkApps_tInd in redl as [args'' [eqind red']]; auto.
-  apply mkApps_eq_inj in eqind as [eq ->]=> //; auto. noconf eq.
-  intuition auto.
-  eapply eq_inductive_refl.
-  transitivity args''; auto.
-  eapply All2_symmetry. typeclasses eauto.
-  eapply (All2_impl red'). intros x y; apply red_conv.
-Qed.
-
 Definition well_sorted {cf:checker_flags} Σ Γ T := 
   ∥ ∑ s, Σ ;;; Γ |- T : tSort s ∥.
 

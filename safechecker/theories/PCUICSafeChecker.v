@@ -3,9 +3,9 @@ From MetaCoq.Template Require Import config monad_utils utils uGraph.
 From MetaCoq.PCUIC Require Import PCUICAst PCUICAstUtils
      PCUICLiftSubst PCUICUnivSubst PCUICTyping PCUICNormal PCUICSR
      PCUICGeneration PCUICReflect PCUICEquality PCUICInversion PCUICValidity
-     PCUICWeakening PCUICPosition PCUICCumulativity PCUICSafeLemmata PCUICSN
+     PCUICWeakening PCUICPosition PCUICCumulativity PCUICInductives PCUICSafeLemmata PCUICSN
      PCUICPretty PCUICArities PCUICConfluence PCUICConversion PCUICWfUniverses.
-From MetaCoq.Bidirectional Require BDTyping.
+From MetaCoq.Bidirectional Require BDTyping BDToPCUIC.
 From MetaCoq.SafeChecker Require Import PCUICSafeReduce PCUICSafeConversion.
 
 From Equations Require Import Equations.
@@ -822,7 +822,71 @@ Section Typecheck.
   Qed.
 
   Obligation Tactic := Program.Tactics.program_simplify ; eauto 2.
+  
+  Section check_fix.
+    Context (infer : forall Γ (HΓ : ∥wf_local Σ Γ∥) t, typing_result (∑ A, ∥Σ;;; Γ |- t : A∥)).
+    Context (Γ : context).
+    Context (HΓ : ∥wf_local Σ Γ∥).
 
+    Equations check_fix_types (mfix : mfixpoint term)
+      : typing_result (∥ All (fun d => isType Σ Γ (dtype d)) mfix ∥) :=
+     check_fix_types [] => Checked (sq All_nil);
+     check_fix_types (def :: mfix) with infer_type infer Γ HΓ (dtype def) := {
+       | Checked (s; t) with check_fix_types mfix := {
+         | Checked a => Checked _;
+         | TypeError e2 => TypeError _
+         };
+       | TypeError e1 => TypeError _
+       }.
+    Next Obligation.
+      destruct a as [a], t as [t].
+      constructor; constructor; auto.
+      exists s; auto.
+    Defined.
+    
+    Context (mfix : mfixpoint term).
+    Context (all_types : ∥ All (fun d => isType Σ Γ (dtype d)) mfix ∥).
+
+    Definition fix_ok d :=
+      ∥ Σ ;;; Γ ,,, fix_context mfix |- dbody d : lift0 #|fix_context mfix| (dtype d) ∥
+      × isLambda (dbody d) = true.
+    
+    Equations check_fix_bodies_aux
+              (mfix : mfixpoint term) (types : ∥ All (fun d => isType Σ Γ (dtype d)) mfix∥)
+      : typing_result (All fix_ok mfix) :=
+      check_fix_bodies_aux [] types => Checked All_nil;
+      check_fix_bodies_aux (def :: mfix') types
+        with infer_cumul infer (Γ ,,, fix_context mfix) _
+                         (dbody def) (lift0 #|fix_context mfix| (dtype def)) _ := {
+        | Checked t with inspect (isLambda (dbody def)) := {
+          | exist true islam with check_fix_bodies_aux mfix' _ := {
+            | Checked a => Checked (All_cons (pair t (eq_sym islam)) a);
+            | TypeError e2 => TypeError e2
+            };
+          | exist false notlam => TypeError (Msg ("not a lambda"))
+          };
+        | TypeError e1 => TypeError e1
+        }.
+    Next Obligation.
+      sq.
+      eapply PCUICWeakening.All_mfix_wf; eauto.
+    Defined.
+    Next Obligation.
+      sq. depelim types.
+      destruct i as [s HH].
+      exists s.
+      apply weakening with (T := tSort s); try assumption.
+      now apply All_mfix_wf.
+    Defined.
+    Next Obligation.
+      sq.
+      now depelim types.
+    Qed.
+    
+    Definition check_fix_bodies := check_fix_bodies_aux mfix all_types.
+
+  End check_fix.
+    
   Program Fixpoint infer (Γ : context) (HΓ : ∥ wf_local Σ Γ ∥) (t : term) {struct t}
     : typing_result ({ A : term & ∥ Σ ;;; Γ |- t : A ∥ }) :=
     match t with
@@ -960,33 +1024,8 @@ Section Typecheck.
       match nth_error mfix n with
       | None => raise (IllFormedFix mfix n)
       | Some decl =>
-        XX <- (fix check_types (mfix : mfixpoint term) {struct mfix}
-              : typing_result (∥ All (fun x => isType Σ Γ (dtype x)) mfix ∥)
-              := match mfix with
-                 | [] => ret (sq All_nil)
-                 | def :: mfix =>
-       (* probably not tail recursive but needed so that next line terminates *)
-                   W <- infer_type infer Γ HΓ (dtype def) ;;
-                   Z <- check_types mfix ;;
-                   ret _
-                 end)
-           mfix ;;
-        YY <- (fix check_bodies (mfix' : mfixpoint term)
-              (XX : ∥ All (fun x => isType Σ Γ (dtype x)) mfix' ∥)
-            {struct mfix'}
-                : typing_result (All (fun d =>
-              ∥ Σ ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d) ∥
-              /\ isLambda (dbody d) = true) mfix')
-              := match mfix' with
-                 | [] => ret All_nil
-                 | def :: mfix' =>
-                   W1 <- infer_cumul infer (Γ ,,, fix_context mfix) _ (dbody def)
-                                    (lift0 #|fix_context mfix| (dtype def)) _ ;;
-                   W2 <- check_eq_true (isLambda (dbody def))
-                                      (Msg "not a lambda") ;;
-                   Z <- check_bodies mfix' _ ;;
-                   ret (All_cons (conj W1 W2) Z)
-                 end) mfix _ ;;
+        XX <- check_fix_types infer Γ HΓ mfix;;
+        YY <- check_fix_bodies infer Γ HΓ mfix XX;;
         guarded <- check_eq_true (fix_guard mfix) (Msg "Unguarded fixpoint") ;;
         wffix <- check_eq_true (wf_fixpoint Σ.1 mfix) (Msg "Ill-formed fixpoint: not defined on a mutually inductive family") ;;
         ret (dtype decl; _)
@@ -996,30 +1035,8 @@ Section Typecheck.
       match nth_error mfix n with
       | None => raise (IllFormedFix mfix n)
       | Some decl =>
-        XX <-  (fix check_types (mfix : mfixpoint term) {struct mfix}
-        : typing_result (∥ All (fun x => isType Σ Γ (dtype x)) mfix ∥)
-        := match mfix with
-           | [] => ret (sq All_nil)
-           | def :: mfix =>
-            (* probably not tail recursive but needed so that next line terminates *)
-             W <- infer_type infer Γ HΓ (dtype def) ;;
-             Z <- check_types mfix ;;
-             ret _
-           end)
-         mfix ;;
-        YY <- (fix check_bodies (mfix' : mfixpoint term)
-        (XX' : ∥ All (fun x => isType Σ Γ (dtype x)) mfix' ∥)
-        {struct mfix'}
-        : typing_result (All (fun d =>
-            ∥ Σ ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d) ∥) mfix')
-              := match mfix' with
-                 | [] => ret All_nil
-                 | def :: mfix' =>
-                   W1 <- infer_cumul infer (Γ ,,, fix_context mfix) _ (dbody def)
-                                    (lift0 #|fix_context mfix| (dtype def)) _ ;;
-                   Z <- check_bodies mfix' _ ;;
-                   ret (All_cons W1 Z)
-                 end) mfix _ ;;
+        XX <- check_fix_types infer Γ HΓ mfix;;
+        YY <- check_fix_bodies infer Γ HΓ mfix XX;;
         guarded <- check_eq_true (cofix_guard mfix) (Msg "Unguarded cofixpoint") ;;
         wfcofix <- check_eq_true (wf_cofixpoint Σ.1 mfix) (Msg "Ill-formed cofixpoint: not producing values in a mutually coinductive family") ;;
         ret (dtype decl; _)
@@ -1215,20 +1232,6 @@ Section Typecheck.
   Defined.
 
   (* tFix *)
-  Next Obligation. sq. constructor; auto. exists W; auto. Defined.
-  Next Obligation. sq. now eapply PCUICWeakening.All_mfix_wf in XX0. Defined.
-  Next Obligation.
-    sq. cbn in *. depelim XX.
-    destruct i as [s HH].
-    exists s.
-    change (tSort s) with (lift0 #|fix_context mfix| (tSort s)).
-    apply weakening; try assumption.
-    now apply All_mfix_wf.
-  Defined.
-  Next Obligation.
-    clear -XX HΣ. sq.
-    now depelim XX.
-  Qed.
   Next Obligation.
     assert (∥ All (fun d => ((Σ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d)) * (isLambda (dbody d) = true))%type) mfix ∥). {
       eapply All_sq, All_impl.  exact YY.
@@ -1238,20 +1241,6 @@ Section Typecheck.
   Qed.
 
   (* tCoFix *)
-  Next Obligation. sq. constructor; auto. exists W; auto. Defined.
-  Next Obligation. sq. now eapply PCUICWeakening.All_mfix_wf in XX. Defined.
-  Next Obligation.
-    sq. cbn in *. depelim XX'.
-    destruct i as [s HH].
-    exists s.
-    change (tSort s) with (lift0 #|fix_context mfix| (tSort s)).
-    apply weakening; try assumption.
-    now apply All_mfix_wf.
-  Defined.
-  Next Obligation.
-    clear -XX' HΣ. sq.
-    now depelim XX'.
-  Qed.
   Next Obligation.
     assert (∥ All (fun d => ((Σ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d)))%type) mfix ∥). {
       eapply All_sq, All_impl.  exact YY.
@@ -1739,38 +1728,61 @@ Section CheckEnv.
 
 End CheckEnv.
 
+Definition principal_type {cf:checker_flags} Σ Γ t T :=
+  forall T',
+    Σ ;;; Γ |- t : T' ->
+    Σ ;;; Γ |- T <= T'.
+
+(*
+Definition principal_sort {cf:checker_flags} Σ Γ t u :=
+  forall u',
+    Σ ;;; Γ |- t : tSort u' ->
+    leq_universe Σ u u'.
+
+Definition principal_prod {cf:checker_flags} Σ Γ t na A B :=
+  forall na' A' B',
+    Σ ;;; Γ |- t : tProd na' A' B' ->
+    Σ ;;; Γ |- tProd na A B <= tProd na' A' B'.
+
+Definition principal_ind {cf:checker_flags} Σ Γ t ind u args :=
+  forall ind' u' args',
+    Σ ;;; Γ |- t : mkApps (tInd ind' u') args' ->
+    Σ ;;; Γ |- mkApps (tInd ind u) args <= mkApps (tInd ind' u') args'.
+*)
+
 Definition Pcheck {cf:checker_flags} Σ Γ t T :=
-  (forall wfΣ onud G isg wfΓ isT,
-      match @infer_cumul _ Σ wfΣ onud G isg (@infer _ Σ wfΣ onud G isg) Γ wfΓ t T isT with
+  (forall wfΣ onud G isg wfΓ T' isT,
+      Σ ;;; Γ |- T' <= T ->
+      match @infer_cumul _ Σ wfΣ onud G isg (@infer _ Σ wfΣ onud G isg) Γ wfΓ t T' isT with
       | Checked _ => True
       | TypeError _ => False
       end).
 
-Definition Pinfer {cf:checker_flags} Σ Γ t T :=
+Definition Pinfer {cf:checker_flags} Σ Γ t (T : term) :=
   (forall wfΣ onud G isg wfΓ,
       match @infer _ Σ wfΣ onud G isg Γ wfΓ t with
-      | Checked (T'; _) => T' = T
+      | Checked (T; _) => ∥principal_type Σ Γ t T∥
       | TypeError _ => False
       end).
 
-Definition Psort {cf:checker_flags} Σ Γ t u :=
+Definition Psort {cf:checker_flags} Σ Γ t (u : Universe.t) :=
   (forall wfΣ onud G isg wfΓ,
       match @infer_type _ Σ wfΣ (@infer _ Σ wfΣ onud G isg) Γ wfΓ t with
-      | Checked (u'; _) => u' = u
+      | Checked (u; _) => ∥principal_type Σ Γ t (tSort u)∥
       | TypeError _ => False
       end).
 
-Definition Pprod {cf:checker_flags} Σ Γ t na A B :=
+Definition Pprod {cf:checker_flags} Σ Γ t (na : aname) (A B : term) :=
   (forall wfΣ onud G isg wfΓ,
       match @infer_applicable _ Σ wfΣ (@infer _ Σ wfΣ onud G isg) Γ wfΓ t with
-      | Checked (na'; A'; B'; _) => (na, A, B) = (na', A', B')
+      | Checked (na; A; B; _) => ∥principal_type Σ Γ t (tProd na A B)∥
       | TypeError _ => False
       end).
 
-Definition Pind {cf:checker_flags} Σ Γ ind t u args :=
+Definition Pind {cf:checker_flags} Σ Γ (ind : inductive) t (u : Instance.t) (args : list term) :=
   (forall wfΣ onud G isg wfΓ,
       match @infer_constructor _ Σ wfΣ (@infer _ Σ wfΣ onud G isg) Γ wfΓ t with
-      | Checked (ind'; u'; args'; _) => (ind', u', args') = (ind, u, args)
+      | Checked (ind; u; args; _) => ∥principal_type Σ Γ t (mkApps (tInd ind u) args)∥
       | TypeError _ => False
       end).
 
@@ -1786,70 +1798,257 @@ Ltac tac :=
   simpl_infer;
   repeat
     match goal with
-    | [H: context[infer_cumul _ _ _ _ _ _ _ ?t ?T _] |-
+    | [H: context[infer_cumul _ _ _ _ _ _ _ ?t _ _] |-
        context[infer_cumul ?wfΣ ?onud ?G ?isg ?inf ?Γ ?wfΓ ?t ?T ?isT]] =>
-      specialize (H wfΣ onud G isg wfΓ isT);
-      destruct (infer_cumul wfΣ onud G isg inf Γ wfΓ t T isT); [|contradiction]
+      specialize (H wfΣ onud G isg wfΓ T isT)
     | [H: context[infer _ _ _ _ _ _ ?t] |- context[infer ?wfΣ ?onud ?G ?isg ?Γ ?wfΓ ?t]] =>
       specialize (H wfΣ onud G isg wfΓ);
-      destruct (infer wfΣ onud G isg Γ wfΓ t) as [(?&?)|]; [|contradiction];
-      subst;
-      simpl_infer
+      destruct (infer wfΣ onud G isg Γ wfΓ t) as [(?&?)|]; [|contradiction]
     | [H: context[infer_type _ _ _ _ ?T] |-
        context[infer_type ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?T]] =>
       specialize (H wfΣ onud G isg wfΓ);
-      destruct (infer_type wfΣ (infer wfΣ onud G isg) Γ wfΓ T) as [(?&?)|]; [|contradiction];
-      subst;
-      simpl_infer
+      destruct (infer_type wfΣ (infer wfΣ onud G isg) Γ wfΓ T) as [(?&?)|]; [|contradiction]
     | [H: context[infer_applicable _ _ _ _ ?t] |-
        context[infer_applicable ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?t]] =>
       specialize (H wfΣ onud G isg wfΓ);
       destruct (infer_applicable wfΣ (infer wfΣ onud G isg) Γ wfΓ t) as [(?&?&?&?)|];
-      [|contradiction];
-      injection H as [= ? ? ?];
-      subst;
-      simpl_infer
+      [|contradiction]
+    | [H: context[infer_constructor _ _ _ _ ?t] |-
+       context[infer_constructor ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?t]] =>
+      specialize (H wfΣ onud G isg wfΓ);
+      destruct (infer_constructor wfΣ (infer wfΣ onud G isg) Γ wfΓ t) as [(?&?&?&?)|];
+      [|contradiction]
     end.
+
+Ltac program_rewrite eq :=
+  match type of eq with
+  | ?l = ?r =>
+    match goal with
+    | |- context[match ?l with _ => _ end (@eq_refl _ ?l)] =>
+      let eqid := fresh "eq" in
+      generalize (@eq_refl _ l); intros eqid;
+      let lid := fresh "l" in
+      set (lid := l) at 1; change (lid = l) in eqid;
+      let efid := fresh "ef" in
+      pose (efid := eq); symmetry in efid;
+      change (r = lid) in efid;
+      destruct efid
+    end
+  end.
+
+Lemma cumul_Ind_Ind_inv {cf:checker_flags} {Σ : global_env_ext} {wfΣ : wf Σ} {Γ ind u args ind' u' args'} : 
+  Σ ;;; Γ |- mkApps (tInd ind u) args <= mkApps (tInd ind' u') args' ->
+  eq_inductive ind ind' *
+  PCUICEquality.R_global_instance Σ (eq_universe Σ) (leq_universe Σ) (IndRef ind) #|args| u u' *
+  All2 (conv Σ Γ) args args'.
+Proof.
+  intros cum.
+  eapply invert_cumul_ind_l in cum as [ui' [l' [redl [ru conv]]]]; auto.
+  eapply red_mkApps_tInd in redl as [args'' [eqind red']]; auto.
+  apply mkApps_eq_inj in eqind as [eq ->]=> //; auto. noconf eq.
+  intuition auto.
+  eapply eq_inductive_refl.
+  transitivity args''; auto.
+  eapply All2_symmetry. typeclasses eauto.
+  eapply (All2_impl red'). intros x y; apply red_conv.
+Qed.
 
 Lemma bd_completeness {cf:checker_flags} :
   BDTyping.env_prop Pcheck Pinfer Psort Pprod Pind PΓ.
 Proof.
   apply BDTyping.typing_ind_env; intros;
-    unfold Pcheck, Pinfer, Psort, Pprod, Pind, PΓ in *; intros;
-      try solve [tac; auto].
+    unfold Pcheck, Pinfer, Psort, Pprod, Pind, PΓ in *; intros.
+  - auto.
   - cbn.
-    set (ee := eq_refl); clearbody ee.
-    set (oo := nth_error Γ n) at 1; change (oo = nth_error Γ n) in ee.
-    pose (HH := H0); symmetry in HH.
-    change (Some decl = oo) in HH.
-    destruct HH.
-    reflexivity.
+    program_rewrite H0.
+    destruct wfΣ0.
+    constructor.
+    red.
+    intros.
+    eapply inversion_Rel in X0 as (?&?&?&?); auto.
+    rewrite e in eq; noconf eq; auto.
   - unfold infer, infer_obligation_2.
     destruct (wf_universe_reflect Σ s); [|congruence].
     cbn.
-    eauto.
+    destruct wfΣ0.
+    constructor; red; intros.
+    eapply inversion_Sort in X0 as (?&?&?); auto.
+  - tac.
+    sq; red; intros T ?.
+    eapply inversion_Prod in X1 as (?&?&?&?&?); auto.
+    eapply H0 in t0.
+    eapply cumul_Sort_l_inv in c as (?&?&?).
+    apply cumul_Sort_inv in t0.
+    eapply H1 in t1.
+    eapply cumul_Sort_inv in t1.
+    eapply red_cumul_cumul_inv; eauto.
+    constructor.
+    constructor.
+    etransitivity; [|eassumption].
+    eapply leq_universe_product_mon; eauto.
+  - tac.
+    sq; red; intros T ?.
+    eapply inversion_Lambda in X1 as (?&?&?&?&?); auto.
+    etransitivity; [|eassumption].
+    eapply congr_cumul_prod; auto.
+  - tac.
+    specialize (H1 ltac:(reflexivity)).
+    destruct infer_cumul; [|contradiction].
+    tac.
+    sq; red; intros T ?.
+    eapply inversion_LetIn in X2 as (?&?&?&?&?&?); auto.
+    apply H0 in t0.
+    apply H2 in t2.
+    etransitivity; [|eassumption].
+    eapply cumul_LetIn_bo; eauto.
+  - tac.
+    apply BDToPCUIC.Bidirectional_to_PCUIC in X; auto.
+    destruct wfΣ0.
+    sq.
+    apply H0 in X.
+    eapply cumul_Prod_Prod_inv in X as (?&?&?); auto.
+    forward H1.
+    1: { eapply conv_cumul; eauto. }
+    destruct infer_cumul; [|easy].
+    sq.
+    intros T ?.
+    apply inversion_App in X as (?&?&?&?&?&?); auto.
+    etransitivity; [|eassumption].
+    eapply H0 in t0.
+    eapply cumul_Prod_Prod_inv in t0 as (?&?&?); auto.
+    eapply PCUICSubstitution.substitution_cumul0; eauto.
   - cbn.
-    set (ee := eq_refl); clearbody ee.
-    set (oo := lookup_env Σ.1 cst) at 1; change (oo = lookup_env Σ.1 cst) in ee.
     unfold BDTyping.declared_constant in H0.
-    pose (HH := H0); symmetry in HH.
-    change (Some (ConstantDecl decl) = oo) in HH.
-    destruct HH.
+    program_rewrite H0.
     admit.
-  - cb
-  - tac; auto.
-  - tac; auto.
-  - tac; auto.
-  - 
-    injection H0 as [= <- <- <-].
-    destruct infer_applicable as [([=]&?)|].
+  - simpl_infer.
+    unfold BDTyping.declared_inductive, BDTyping.declared_minductive in H0.
+    destruct H0 as (eq&?).
+    unfold lookup_ind_decl.
+    program_rewrite eq.
+    program_rewrite H0.
+    cbn.
+    admit.
+  - simpl_infer.
+    repeat red in H0.
+    destruct H0 as ((look_mind&look_oib)&look_ctor).
+    red in look_mind.
+    unfold lookup_ind_decl.
+    cbn in *.
+    program_rewrite look_mind.
+    program_rewrite look_oib.
+    program_rewrite look_ctor.
+    admit.
+  - tac.
+    apply BDToPCUIC.Bidirectional_to_PCUIC in X0; auto.
+    sq.
+    apply H1 in X0.
+    eapply cumul_Ind_Ind_inv in X0 as ((?&?)&?).
+    change (eq_inductive x ind) with (eqb x ind) in i.
+    apply eqb_eq in i as ->.
+    destruct check_eq_true eqn:eq.
+    2: { rewrite eq_inductive_refl in eq; discriminate. }
+    clear eq.
+    destruct isdecl as (look_mind&look_oib).
+    red in look_mind.
+    unfold lookup_ind_decl.
+    program_rewrite look_mind.
+    program_rewrite look_oib.
+    simpl_infer.
+    destruct check_eq_true eqn:eq'.
+    2: { rewrite H0 in eq'; discriminate eq'. }
+    subst npar.
+    destruct check_eq_true eqn:eq'' in |- *.
+    2: { rewrite Nat.eqb_refl in eq''; discriminate eq''. }
+    destruct infer eqn:inf.
+    2: { depelim X1.
+         apply BDToPCUIC.Bidirectional_to_PCUIC in i0; auto.
+         unfold BDToPCUIC.Psort in i0.
+         specialize (H4 (sq wfΣ0) (sq onud) G isg (sq wfΓ0) T' (sq (s; i0))).
+         unfold infer_cumul in H4.
+         rewrite inf in H4.
+         forward H4 by reflexivity.
+         contradiction H4. }
+    eapply build_case_predicate_type_spec in H3.
+    admit.
+  - simpl_infer.
+    destruct p as ((?&?)&?).
+    repeat red in H0.
+    destruct H0 as ((look_mind&look_oib)&look_proj&pars).
+    unfold BDTyping.declared_minductive in *.
+    unfold lookup_ind_decl.
+    cbn in *.
+    program_rewrite look_mind.
+    program_rewrite look_oib.
+    cbn.
+    program_rewrite look_proj.
+    tac.
+    subst n.
+    clear PΣ X.
+    destruct H1 as [H1].
+    apply BDToPCUIC.Bidirectional_to_PCUIC in X0; auto.
+    apply H1 in X0.
+    pose proof wfΣ0 as [].
+    apply cumul_Ind_Ind_inv in X0 as ((?&?)&?).
+    change (is_true (eqb x i)) in i0.
+    apply eqb_eq in i0 as ->.
+    destruct check_eq_true eqn:eq2.
+    2: { rewrite eq_inductive_refl in eq2; discriminate. }
+    destruct check_eq_true eqn:eq3 in |- *.
+    2: { rewrite Nat.eqb_refl in eq3; discriminate. }
+    destruct check_eq_true eqn:eq4 in |- *.
+    2: { apply All2_length in a. rewrite a H2 Nat.eqb_refl in eq4. discriminate. }
+    constructor.
+    intros T ?.
+    apply inversion_Proj in X0 as (?&?&?&?&?&?&?&?&?); auto.
+    cbn in *.
+    etransitivity; [|eassumption].
+    admit.
+  - simpl_infer.
+    program_rewrite H1.
+    admit.
+  - simpl_infer.
+    program_rewrite H1.
+    admit.
+  - unfold infer_type.
+    cbn.
+    tac.
+    apply BDToPCUIC.Bidirectional_to_PCUIC in X; auto.
+    destruct H0 as [H0], wfΣ0.
+    apply H0 in X.
+    eapply cumul_trans in X; eauto.
+    forward X by (eapply red_cumul; eauto).
+    eapply cumul_alt in X as (?&?&(r1&r2)&?).
+    eapply invert_red_sort in r2 as ->.
+    inversion l; subst; clear l.
+    destruct reduce_to_sort as [(?&[?])|] eqn:r; cbn.
+    + constructor; intros ? ?.
+      apply H0 in X.
+      eapply red_confluence in r1 as (?&?&?); eauto.
+      apply invert_red_sort in r1 as ->.
+      apply invert_red_sort in r2 as [= ->].
+      eapply cumul_red_l_inv; eauto.
+    + eauto using reduce_to_sort_complete.
+  - unfold infer_applicable.
+    specialize (H0 wfΣ0 onud G isg wfΓ0).
+    destruct (infer wfΣ0 onud G isg Γ wfΓ0 t) eqn:inf in H0 |-; [|easy].
+    program_rewrite inf.
+    destruct a; subst.
     match goal with
-    | [H: context[infer_cumul _ _ _ _ _ _ _ ?t ?T _] |-
-       context[infer_cumul ?wfΣ ?onud ?G ?isg ?inf ?Γ ?wfΓ ?t ?T ?isT]] =>
-      specialize (H wfΣ onud G isg wfΓ isT);
-      destruct (infer_cumul wfΣ onud G isg inf Γ wfΓ t T isT); [|contradiction]
-       end.
-
-Lemma infer_complete Σ wfΣ onud G isg Γ wfΓ t te :
-  
-  @infer _ Σ wfΣ onud G isg Γ wfΓ t = TypeError te -> 
+    | |- context[reduce_to_prod ?a ?b ?c ?d] =>
+      destruct (reduce_to_prod a b c d) eqn:rprod in |-
+    end.
+    2: { exfalso.
+         eauto using reduce_to_prod_complete. }
+    program_rewrite rprod.
+    destruct a as (na'&a'&b'&[r']).
+    destruct wfΣ0.
+    eapply red_confluence in X0 as (?&r1&r2); eauto.
+    eapply whnf_red_inv in r1; eauto.
+    eapply whnf_red_inv in r2; eauto.
+    inversion r1; subst.
+    inversion r2; subst.
+    inv r2.
+    depelim r1.
+    depelim r2.
+    eapply invert_red_prod in r1 as ?.

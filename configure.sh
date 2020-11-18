@@ -22,7 +22,7 @@ then
         CHECKER_DEPS="-R ../template-coq/theories MetaCoq.Template -I ../template-coq/build"
         PCUIC_MLDEPS="-I ../checker/src"
         PCUIC_VDEPS="-R ../checker/theories MetaCoq.Checker"
-        SAFECHECKER_DEPS="${PCUIC_VDEPS} -R ../pcuic/theories MetaCoq.PCUIC"
+        SAFECHECKER_DEPS="${PCUIC_VDEPS} -R ../pcuic/theories MetaCoq.PCUIC -R ../bidirectional/theories MetaCoq.Bidirectional"
         ERASURE_DEPS="-R ../safechecker/theories MetaCoq.SafeChecker"
         TRANSLATIONS_DEPS="${PCUIC_VDEPS}"
     else

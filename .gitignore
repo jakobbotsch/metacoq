@@ -413,6 +413,5 @@ erasure/src/signature.mli
 erasure/src/eOptimizePropDiscr.ml
 erasure/src/eOptimizePropDiscr.mli
 
-bidirectional/CoqMakefile
-
-bidirectional/CoqMakefile.conf
+bidirectional/Makefile.bd
+bidirectional/Makefile.bd.conf

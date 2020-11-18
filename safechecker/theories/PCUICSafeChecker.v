@@ -1,14 +1,17 @@
 (* Distributed under the terms of the MIT license. *)
-From MetaCoq.Template Require Import config utils uGraph.
+From MetaCoq.Template Require Import config monad_utils utils uGraph.
 From MetaCoq.PCUIC Require Import PCUICAst PCUICAstUtils
      PCUICLiftSubst PCUICUnivSubst PCUICTyping PCUICNormal PCUICSR
      PCUICGeneration PCUICReflect PCUICEquality PCUICInversion PCUICValidity
      PCUICWeakening PCUICPosition PCUICCumulativity PCUICSafeLemmata PCUICSN
      PCUICPretty PCUICArities PCUICConfluence PCUICConversion PCUICWfUniverses.
+From MetaCoq.Bidirectional Require BDTyping.
 From MetaCoq.SafeChecker Require Import PCUICSafeReduce PCUICSafeConversion.
 
 From Equations Require Import Equations.
 Require Import ssreflect.
+
+Import MonadNotation.
 
 Local Set Keyed Unification.
 Set Equations Transparent.
@@ -637,6 +640,53 @@ Section Typecheck.
       now constructor; eapply type_reduction.
     Defined.
 
+    (* Why doesn't the straightforward definition type check? *)
+    (*
+    Program Definition infer_prod Γ HΓ t
+      : typing_result (∑ na A B, ∥ Σ ;;; Γ |- t : tProd na A B ∥) :=
+      '(T; p) <- infer Γ HΓ t;;
+      '(na; A; B; r) <- reduce_to_prod Γ T _;;
+      ret (na; A; B; _).
+     *)
+    
+    Program Definition infer_applicable Γ HΓ t
+      : typing_result (∑ na A B, ∥ Σ ;;; Γ |- t : tProd na A B ∥) :=
+      match infer Γ HΓ t with
+      | Checked (u; p) =>
+        match reduce_to_prod Γ u _ with
+        | Checked (na; A; B; r) => Checked (na; A; B; _)
+        | TypeError te => TypeError te
+        end
+      | TypeError te => TypeError te
+      end.
+    Next Obligation.
+      eapply validity_wf; eauto.
+    Defined.
+    Next Obligation.
+      destruct HΣ, p, r.
+      constructor.
+      eapply type_reduction; eauto.
+    Defined.
+    
+    Program Definition infer_constructor Γ HΓ t
+      : typing_result (∑ i u l, ∥ Σ ;;; Γ |- t : mkApps (tInd i u) l ∥) :=
+      match infer Γ HΓ t with
+      | Checked (T; p) =>
+        match reduce_to_ind Γ T _ with
+        | Checked (i; u; l; r) => Checked (i; u; l; _)
+        | TypeError te => TypeError te
+        end
+      | TypeError te => TypeError te
+      end.
+    Next Obligation.
+      eapply validity_wf; eauto.
+    Defined.
+    Next Obligation.
+      destruct p, r, HΣ.
+      constructor.
+      eapply type_reduction; eauto.
+    Defined.
+
     Program Definition infer_cumul Γ HΓ t A (hA : ∥ isType Σ Γ A ∥)
       : typing_result (∥ Σ ;;; Γ |- t : A ∥) :=
       A' <- infer Γ HΓ t ;;
@@ -807,8 +857,7 @@ Section Typecheck.
           ret (tLetIn n b b_ty b'_ty.π1; _)
 
     | tApp t u =>
-          ty <- infer Γ HΓ t ;;
-          pi <- reduce_to_prod Γ ty.π1 _ ;;
+          pi <- infer_applicable infer Γ HΓ t;;
           infer_cumul infer Γ HΓ u pi.π2.π1 _ ;;
           ret (subst10 u pi.π2.π2.π1; _)
 
@@ -837,8 +886,7 @@ Section Typecheck.
           end
 
     | tCase (ind, par) p c brs =>
-      cty <- infer Γ HΓ c ;;
-      I <- reduce_to_ind Γ cty.π1 _ ;;
+      I <- infer_constructor infer Γ HΓ c;;
       let '(ind'; I') := I in let '(u; I'') := I' in let '(args; H) := I'' in
       check_eq_true (eqb ind ind')
                     (* bad case info *)
@@ -894,8 +942,7 @@ Section Typecheck.
           d <- lookup_ind_decl ind ;;
           match nth_error d.π2.π1.(ind_projs) k with
           | Some pdecl =>
-            c_ty <- infer Γ HΓ c ;;
-            I <- reduce_to_ind Γ c_ty.π1 _ ;;
+            I <- infer_constructor infer Γ HΓ c;;
             let '(ind'; I') := I in let '(u; I'') := I' in let '(args; H) := I'' in
             check_eq_true (eqb ind ind')
                           (NotConvertible G Γ (tInd ind u) (tInd ind' u)) ;;
@@ -1018,10 +1065,8 @@ Section Typecheck.
   Defined.
 
   (* tApp *)
-  Next Obligation. simpl; eauto using validity_wf. Qed.
   Next Obligation.
     cbn in *; sq.
-    eapply type_reduction in X1 ; try eassumption.
     eapply validity_term in X1 ; try assumption. destruct X1 as [s HH].
     eapply inversion_Prod in HH ; try assumption.
     destruct HH as [s1 [_ [HH _]]].
@@ -1030,7 +1075,7 @@ Section Typecheck.
   Next Obligation.
     cbn in *; sq; econstructor.
     2: eassumption.
-    eapply type_reduction; eassumption.
+    eassumption.
   Defined.
 
   (* tConst *)
@@ -1053,16 +1098,15 @@ Section Typecheck.
 
   (* tCase *)
   Next Obligation. simpl; eauto using validity_wf. Qed.
-  Next Obligation. simpl; eauto using validity_wf. Qed.
   Next Obligation.
-    destruct X, X9. sq.
+    destruct X, X8. sq.
     change (eqb ind I = true) in H0.
     destruct (eqb_spec ind I) as [e|e]; [destruct e|discriminate].
     change (eqb (ind_npars d) par = true) in H1.
     destruct (eqb_spec (ind_npars d) par) as [e|e]; [|discriminate].
     rename Heq_anonymous into HH. symmetry in HH.
     simpl in *.
-    eapply type_reduction in t0; eauto. eapply validity in t0; eauto.
+    eapply validity in X5; eauto.
     rewrite <- e in HH.
     eapply PCUICInductiveInversion.WfArity_build_case_predicate_type in HH; eauto.
     destruct HH as [[s Hs] ?]. eexists; eauto.
@@ -1088,8 +1132,7 @@ Section Typecheck.
     change (eqb (ind_npars d) par = true) in H1.
     destruct (eqb_spec (ind_npars d) par) as [e|e]; [|discriminate]; subst.
     assert (wfΣ : wf_ext Σ) by (split; auto).
-    eapply type_reduction in X9; eauto.
-    have val:= validity_term wfΣ X9.
+    have val:= validity_term wfΣ H.
     eapply type_Cumul' in X; [| |eassumption].
     2:{ eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
         eapply validity in X; eauto.
@@ -1114,7 +1157,7 @@ Section Typecheck.
     change (eqb (ind_npars decl) par = true) in H1.
     destruct (eqb_spec (ind_npars decl) par) as [e|e]; [|discriminate]; subst.
     depelim HH.
-    sq. auto. now depelim X10.
+    sq. now depelim X9.
   Defined.
   Next Obligation.
     sq. now depelim HH.
@@ -1139,10 +1182,9 @@ Section Typecheck.
     change (eqb (ind_npars d) par = true) in H1.
     destruct (eqb_spec (ind_npars d) par) as [e|e]; [|discriminate]; subst.
     assert (wfΣ : wf_ext Σ) by (split; auto).
-    eapply type_reduction in X9; eauto.
     eapply type_Cumul' in X; eauto.
     2:{ eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
-        now eapply validity in X9.
+        now eapply validity in H.
         eapply validity in X; eauto.
         generalize (PCUICClosed.destArity_spec [] pty).
         rewrite -Heq_anonymous0 /=. intros ->.
@@ -1164,13 +1206,11 @@ Section Typecheck.
   Obligation Tactic := Program.Tactics.program_simplify ; eauto 2.
 
   (* tProj *)
-  Next Obligation. simpl; eauto using validity_wf. Qed.
   Next Obligation.
     simpl in *; sq; eapply type_Proj with (pdecl := (i, t0)).
     - split. eassumption. split. symmetry; eassumption. cbn in *.
       now apply beq_nat_true.
-    - cbn. destruct (ssrbool.elimT (eqb_spec ind I)); [assumption|].
-      eapply type_reduction; eassumption.
+    - cbn. destruct (ssrbool.elimT (eqb_spec ind I)); auto.
     - now apply beq_nat_true.
   Defined.
 
@@ -1273,7 +1313,7 @@ Section Typecheck.
     : typing_result (∥ Σ;;; Γ |- t : A ∥) :=
     check_isType Γ HΓ A ;;
     infer_cumul infer Γ HΓ t A _.
-
+  
 End Typecheck.
 
 
@@ -1698,3 +1738,118 @@ Section CheckEnv.
   Qed.
 
 End CheckEnv.
+
+Definition Pcheck {cf:checker_flags} Σ Γ t T :=
+  (forall wfΣ onud G isg wfΓ isT,
+      match @infer_cumul _ Σ wfΣ onud G isg (@infer _ Σ wfΣ onud G isg) Γ wfΓ t T isT with
+      | Checked _ => True
+      | TypeError _ => False
+      end).
+
+Definition Pinfer {cf:checker_flags} Σ Γ t T :=
+  (forall wfΣ onud G isg wfΓ,
+      match @infer _ Σ wfΣ onud G isg Γ wfΓ t with
+      | Checked (T'; _) => T' = T
+      | TypeError _ => False
+      end).
+
+Definition Psort {cf:checker_flags} Σ Γ t u :=
+  (forall wfΣ onud G isg wfΓ,
+      match @infer_type _ Σ wfΣ (@infer _ Σ wfΣ onud G isg) Γ wfΓ t with
+      | Checked (u'; _) => u' = u
+      | TypeError _ => False
+      end).
+
+Definition Pprod {cf:checker_flags} Σ Γ t na A B :=
+  (forall wfΣ onud G isg wfΓ,
+      match @infer_applicable _ Σ wfΣ (@infer _ Σ wfΣ onud G isg) Γ wfΓ t with
+      | Checked (na'; A'; B'; _) => (na, A, B) = (na', A', B')
+      | TypeError _ => False
+      end).
+
+Definition Pind {cf:checker_flags} Σ Γ ind t u args :=
+  (forall wfΣ onud G isg wfΓ,
+      match @infer_constructor _ Σ wfΣ (@infer _ Σ wfΣ onud G isg) Γ wfΓ t with
+      | Checked (ind'; u'; args'; _) => (ind', u', args') = (ind, u, args)
+      | TypeError _ => False
+      end).
+
+Definition PΓ (cf : checker_flags) (Σ : global_env_ext) (Γ : context)
+           (wfΓ : BDTyping.All_local_env
+                    (BDTyping.lift_sorting BDTyping.checking BDTyping.infering_sort Σ) Γ) :=
+  True.
+
+Ltac simpl_infer :=
+  cbn -[infer_cumul infer_type infer_applicable infer_constructor].
+
+Ltac tac :=
+  simpl_infer;
+  repeat
+    match goal with
+    | [H: context[infer_cumul _ _ _ _ _ _ _ ?t ?T _] |-
+       context[infer_cumul ?wfΣ ?onud ?G ?isg ?inf ?Γ ?wfΓ ?t ?T ?isT]] =>
+      specialize (H wfΣ onud G isg wfΓ isT);
+      destruct (infer_cumul wfΣ onud G isg inf Γ wfΓ t T isT); [|contradiction]
+    | [H: context[infer _ _ _ _ _ _ ?t] |- context[infer ?wfΣ ?onud ?G ?isg ?Γ ?wfΓ ?t]] =>
+      specialize (H wfΣ onud G isg wfΓ);
+      destruct (infer wfΣ onud G isg Γ wfΓ t) as [(?&?)|]; [|contradiction];
+      subst;
+      simpl_infer
+    | [H: context[infer_type _ _ _ _ ?T] |-
+       context[infer_type ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?T]] =>
+      specialize (H wfΣ onud G isg wfΓ);
+      destruct (infer_type wfΣ (infer wfΣ onud G isg) Γ wfΓ T) as [(?&?)|]; [|contradiction];
+      subst;
+      simpl_infer
+    | [H: context[infer_applicable _ _ _ _ ?t] |-
+       context[infer_applicable ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?t]] =>
+      specialize (H wfΣ onud G isg wfΓ);
+      destruct (infer_applicable wfΣ (infer wfΣ onud G isg) Γ wfΓ t) as [(?&?&?&?)|];
+      [|contradiction];
+      injection H as [= ? ? ?];
+      subst;
+      simpl_infer
+    end.
+
+Lemma bd_completeness {cf:checker_flags} :
+  BDTyping.env_prop Pcheck Pinfer Psort Pprod Pind PΓ.
+Proof.
+  apply BDTyping.typing_ind_env; intros;
+    unfold Pcheck, Pinfer, Psort, Pprod, Pind, PΓ in *; intros;
+      try solve [tac; auto].
+  - cbn.
+    set (ee := eq_refl); clearbody ee.
+    set (oo := nth_error Γ n) at 1; change (oo = nth_error Γ n) in ee.
+    pose (HH := H0); symmetry in HH.
+    change (Some decl = oo) in HH.
+    destruct HH.
+    reflexivity.
+  - unfold infer, infer_obligation_2.
+    destruct (wf_universe_reflect Σ s); [|congruence].
+    cbn.
+    eauto.
+  - cbn.
+    set (ee := eq_refl); clearbody ee.
+    set (oo := lookup_env Σ.1 cst) at 1; change (oo = lookup_env Σ.1 cst) in ee.
+    unfold BDTyping.declared_constant in H0.
+    pose (HH := H0); symmetry in HH.
+    change (Some (ConstantDecl decl) = oo) in HH.
+    destruct HH.
+    admit.
+  - cb
+  - tac; auto.
+  - tac; auto.
+  - tac; auto.
+  - 
+    injection H0 as [= <- <- <-].
+    destruct infer_applicable as [([=]&?)|].
+    match goal with
+    | [H: context[infer_cumul _ _ _ _ _ _ _ ?t ?T _] |-
+       context[infer_cumul ?wfΣ ?onud ?G ?isg ?inf ?Γ ?wfΓ ?t ?T ?isT]] =>
+      specialize (H wfΣ onud G isg wfΓ isT);
+      destruct (infer_cumul wfΣ onud G isg inf Γ wfΓ t T isT); [|contradiction]
+       end.
+
+Lemma infer_complete Σ wfΣ onud G isg Γ wfΓ t te :
+  
+  @infer _ Σ wfΣ onud G isg Γ wfΓ t = TypeError te -> 

@@ -120,6 +120,7 @@ Section fix_sigma.
           | H : ∥ _ ∥ |- _ => destruct H
           end; try eapply sq.
 
+
   Equations is_arity Γ (HΓ : ∥wf_local Σ Γ∥) T (HT : welltyped Σ Γ T) :
     {Is_conv_to_Arity Σ Γ T} + {~ Is_conv_to_Arity Σ Γ T}
     by wf ((Γ;T;HT) : (∑ Γ t, welltyped Σ Γ t)) term_rel :=

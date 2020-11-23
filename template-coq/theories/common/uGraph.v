@@ -447,15 +447,18 @@ Definition uctx_invariants (uctx : ContextSet.t)
 Definition global_uctx_invariants (uctx : ContextSet.t)
   := LevelSet.In Level.lSet uctx.1 /\ uctx_invariants uctx.
 
+Definition gc_invariant (vs : VSet.t) (gc : GoodConstraint.t) :=
+  match gc with
+  | gc_le l z l' => VSet.In (vtn l) vs
+                    /\ VSet.In (vtn l') vs
+  | gc_lt_set_level _ n
+  | gc_le_level_set n _ => VSet.In (Level.Level n) vs
+  | gc_le_var_set n _
+  | gc_le_set_var _ n => VSet.In (Level.Var n) vs
+  end.
+
 Definition global_gc_uctx_invariants (uctx : VSet.t * GoodConstraintSet.t)
-  := VSet.In lSet uctx.1 /\ GoodConstraintSet.For_all (fun gc => match gc with
-                 | gc_le l z l' => VSet.In (vtn l) uctx.1
-                                 /\ VSet.In (vtn l') uctx.1
-                 | gc_lt_set_level _ n
-                 | gc_le_level_set n _ => VSet.In (Level.Level n) uctx.1
-                 | gc_le_var_set n _
-                 | gc_le_set_var _ n => VSet.In (Level.Var n) uctx.1
-                 end) uctx.2.
+  := VSet.In lSet uctx.1 /\ GoodConstraintSet.For_all (gc_invariant uctx.1) uctx.2.
 
 Definition gc_of_uctx `{checker_flags} (uctx : ContextSet.t)
   : option (VSet.t * GoodConstraintSet.t)
@@ -520,7 +523,34 @@ Proof.
         apply HH.
 Qed.
 
-
+Lemma all_gc_invariant {cf:checker_flags} ctx ctrs gctrs : 
+  gc_of_constraints ctrs = Some gctrs ->
+  ConstraintSet.For_all (fun '(l, _, l') => declared l ctx /\ declared l' ctx) ctrs ->
+  GoodConstraintSet.For_all (gc_invariant (no_prop_levels ctx)) gctrs.
+Proof.
+  intros ? Hi gc Hgc.
+  eapply gc_of_constraint_iff in Hgc; tea.
+  destruct Hgc as [e [He HH]].
+  specialize (Hi e He); cbn in Hi.
+  clear -Hi HH.
+  destruct e as [[l ct] l']; simpl in Hi.
+  destruct l, ct, l'; cbn in HH; destruct prop_sub_type; cbn in HH.
+  all:repeat match goal with
+             | HH : context [ (?z ?= 0)%Z ] |- _ => 
+               destruct (Z.compare_spec z 0); simpl in HH; auto
+             | HH : context [ (?z <=? 0)%Z ] |- _ => 
+               destruct (Z.leb_spec z 0); simpl in HH; auto
+             | HH : False |- _ => contradiction HH
+             | HH : GoodConstraintSet.In ?A GoodConstraintSet.empty |- _
+               => apply GoodConstraintSetFact.empty_iff in HH; contradiction HH
+             | HH : GoodConstraintSet.In ?A (GoodConstraintSet.singleton ?B) |- _
+               => apply GoodConstraintSetFact.singleton_1 in HH; subst gc
+             | HH : GoodConstraintSet.In ?A (GoodConstraintSet_pair ?B _) |- _
+               => apply GoodConstraintSet_pair_In in HH; destruct HH as [HH|HH]; subst gc
+             end.
+  all: try split; try apply no_prop_levels_no_prop_level, Hi;
+    try apply no_prop_levels_no_prop_level, Hi.
+Qed.
 
 Lemma gc_of_uctx_invariants `{cf:checker_flags} uctx uctx'
       (H : gc_of_uctx uctx = Some uctx')
@@ -532,30 +562,7 @@ Proof.
   intros ctrs eq; rewrite eq in H; apply some_inj in H. subst uctx'.
   split; simpl.
   - apply no_prop_levels_no_prop_level; tas.
-  - red in Hi.
-    destruct uctx as [levels ctrs0]; cbn in *.
-    intros gc Hgc.
-    eapply gc_of_constraint_iff in Hgc; tea.
-    destruct Hgc as [e [He HH]].
-    specialize (Hi e He); cbn in Hi.
-    clear -Hi HH.
-    destruct e as [[l ct] l']; simpl in Hi.
-    destruct l, ct, l'; cbn in HH; destruct prop_sub_type; cbn in HH.
-    all:repeat match goal with
-         | HH : context [ (?z ?= 0)%Z ] |- _ => 
-          destruct (Z.compare_spec z 0); simpl in HH; auto
-          | HH : context [ (?z <=? 0)%Z ] |- _ => 
-          destruct (Z.leb_spec z 0); simpl in HH; auto
-         | HH : False |- _ => contradiction HH
-         | HH : GoodConstraintSet.In ?A GoodConstraintSet.empty |- _
-           => apply GoodConstraintSetFact.empty_iff in HH; contradiction HH
-         | HH : GoodConstraintSet.In ?A (GoodConstraintSet.singleton ?B) |- _
-           => apply GoodConstraintSetFact.singleton_1 in HH; subst gc
-         | HH : GoodConstraintSet.In ?A (GoodConstraintSet_pair ?B _) |- _
-           => apply GoodConstraintSet_pair_In in HH; destruct HH as [HH|HH]; subst gc
-         end.
-    all: try split; try apply no_prop_levels_no_prop_level, Hi;
-      try apply no_prop_levels_no_prop_level, Hi.
+  - eauto using all_gc_invariant.
 Qed.
 
 Definition edge_of_level (l : VariableLevel.t) : EdgeSet.elt :=
@@ -1702,12 +1709,15 @@ Section CheckLeq.
     := GoodConstraintSet.for_all check_gc_constraint.
 
   Definition check_constraints ctrs :=
-    match gc_of_constraints ctrs with
-    | Some ctrs => check_gc_constraints ctrs
-    | None => false
-    end.
+    if check_univs then
+      match gc_of_constraints ctrs with
+      | Some ctrs => check_gc_constraints ctrs
+      | None => false
+      end
+    else
+      true.
 
-  Lemma check_gc_constraint_spec gc
+  Lemma check_gc_constraint_sound gc
     : check_gc_constraint gc
       -> if check_univs then forall v, gc_satisfies v uctx.2 -> gc_satisfies0 v gc else True.
   Proof.
@@ -1731,18 +1741,53 @@ Section CheckLeq.
       specialize (HH v Hv). cbn in HH. unfold gc_satisfies0. toProp.
       lled; lia.
   Qed.
+  
+  Lemma check_gc_constraint_complete gc :
+    gc_invariant uctx.1 gc ->
+    (if check_univs then forall v, gc_satisfies v uctx.2 -> gc_satisfies0 v gc else True) ->
+    check_gc_constraint gc.
+  Proof.
+    intros inv.
+    unfold check_gc_constraint.
+    destruct check_univs; cbn; [|auto].
+    pose proof Huctx as (HlSet&_).
+    destruct gc as [l z l'|k l|k n|l k|n k].
+    all: cbn in *; intros H.
+    all: apply leqb_no_prop_n_spec; [intuition auto|intuition auto|].
+    all: intros v Hv.
+    all: apply H in Hv.
+    all: cbn in *; toProp.
+    all: try lia.
+    destruct l, l'; cbn in *; lia.
+  Qed.
 
-  Lemma check_gc_constraints_spec ctrs
+  Lemma check_gc_constraints_sound ctrs
     : check_gc_constraints ctrs
       -> if check_univs then forall v, gc_satisfies v uctx.2 -> gc_satisfies v ctrs else True.
   Proof.
-    pose proof check_gc_constraint_spec as XX.
+    pose proof check_gc_constraint_sound as XX.
     unfold check_gc_constraint. destruct check_univs; [cbn|trivial].
     intros HH v Hv.
     apply GoodConstraintSet.for_all_spec. now intros x y [].
     apply GoodConstraintSet.for_all_spec in HH. 2: now intros x y [].
     intros gc Hgc. specialize (HH gc Hgc).
     apply XX; assumption.
+  Qed.
+  
+  Lemma check_gc_constraints_complete ctrs :
+    GoodConstraintSet.For_all (gc_invariant uctx.1) ctrs ->
+    (if check_univs then forall v, gc_satisfies v uctx.2 -> gc_satisfies v ctrs else True) ->
+    check_gc_constraints ctrs.
+  Proof.
+    intros all_invs H.
+    apply GoodConstraintSet.for_all_spec; [now intros ? ? []|].
+    intros gc gcin.
+    apply check_gc_constraint_complete; auto.
+    destruct check_univs; auto.
+    intros v gcv.
+    specialize (H _ gcv).
+    apply GoodConstraintSet.for_all_spec in H; [|now intros ? ? []].
+    apply H; auto.
   Qed.
 
   Definition eqb_univ_instance (u1 u2 : Instance.t) : bool
@@ -1927,14 +1972,15 @@ Section CheckLeq2.
     exact eq.
   Qed.
 
-  Lemma check_constraints_spec ctrs
+  Lemma check_constraints_sound ctrs
     : check_constraints G ctrs -> valid_constraints uctx.2 ctrs.
   Proof.
     unfold check_constraints, valid_constraints.
+    destruct check_univs eqn:check; [|trivial].
     case_eq (gc_of_constraints ctrs); [|discriminate].
     intros ctrs' Hctrs' HH.
-    eapply (check_gc_constraints_spec _ uctx' Huctx' HC' HG') in HH.
-    destruct check_univs; cbn; [|trivial].
+    eapply (check_gc_constraints_sound _ uctx' Huctx' HC' HG') in HH.
+    rewrite check in HH.
     intros v Hv.
     apply gc_of_constraints_spec.
     apply gc_of_constraints_spec in Hv.
@@ -1943,4 +1989,36 @@ Section CheckLeq2.
     unfold is_graph_of_uctx, gc_of_uctx in HG.
     now destruct (gc_of_constraints uctx.2).
   Qed.
+  
+  Lemma check_constraints_complete ctrs :
+    ConstraintSet.For_all (fun '(l, _, l') => declared l uctx.1 /\ declared l' uctx.1) ctrs ->
+    valid_constraints uctx.2 ctrs ->
+    check_constraints G ctrs.
+  Proof.
+    unfold valid_constraints, check_constraints.
+    destruct check_univs eqn:check; [|trivial].
+    intros decl val.
+    unfold valid_constraints0 in val.
+    destruct (gc_of_constraints ctrs) eqn:gcoc.
+    2: { destruct HC.
+         apply val in H.
+         eapply gc_of_constraints_spec in H.
+         rewrite gcoc in H.
+         contradiction H. }
+    eapply check_gc_constraints_complete; eauto.
+    - unfold is_graph_of_uctx, gc_of_uctx in HG.
+      destruct (gc_of_constraints uctx.2); cbn in *; [|contradiction].
+      eauto using all_gc_invariant.
+    - rewrite check.
+      intros v gcv.
+      pose proof (gc_of_constraints_spec v ctrs).
+      rewrite gcoc in H.
+      cbn in H.
+      apply H.
+      apply val.
+      apply gc_of_constraints_spec.
+      unfold is_graph_of_uctx, gc_of_uctx in HG.
+      destruct (gc_of_constraints uctx.2); cbn in *; auto.
+  Qed.
+    
 End CheckLeq2.

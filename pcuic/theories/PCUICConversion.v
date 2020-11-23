@@ -634,60 +634,28 @@ Section Inversions.
       + now eapply red_cumul_inv.
   Qed.
 
-  Lemma eq_term_upto_univ_conv_arity_l :
-    forall Re Rle Γ u v,
+  Lemma eq_term_upto_univ_arity_l :
+    forall Re Rle u v,
       isArity u ->
       eq_term_upto_univ Σ Re Rle u v ->
-      Is_conv_to_Arity Σ Γ v.
+      isArity v.
   Proof.
-    intros Re Rle Γ u v a e.
-    induction u in Γ, a, v, Rle, e |- *. all: try contradiction.
+    intros Re Rle u v a e.
+    induction u in a, v, Rle, e |- *. all: try contradiction.
     all: dependent destruction e.
-    - eexists. split.
-      + constructor. reflexivity.
-      + reflexivity.
-    - simpl in a.
-      eapply IHu2 in e3. 2: assumption.
-      destruct e3 as [b'' [[r] ab]].
-      exists (tProd na' a' b''). split.
-      + constructor. eapply red_prod_r. eassumption.
-      + simpl. assumption.
-    - simpl in a.
-      eapply IHu3 in e4. 2: assumption.
-      destruct e4 as [u'' [[r] au]].
-      exists (tLetIn na' t' ty' u''). split.
-      + constructor. eapply red_letin.
-        all: try solve [ constructor ].
-        eassumption.
-      + simpl. assumption.
+    all: cbn in *; eauto.
   Qed.
 
-  Lemma eq_term_upto_univ_conv_arity_r :
-    forall Re Rle Γ u v,
+  Lemma eq_term_upto_univ_arity_r :
+    forall Re Rle u v,
       isArity u ->
       eq_term_upto_univ Σ Re Rle v u ->
-      Is_conv_to_Arity Σ Γ v.
+      isArity v.
   Proof.
-    intros Re Rle Γ u v a e.
-    induction u in Γ, a, v, Rle, e |- *. all: try contradiction.
+    intros Re Rle u v a e.
+    induction u in a, v, Rle, e |- *. all: try contradiction.
     all: dependent destruction e.
-    - eexists. split.
-      + constructor. reflexivity.
-      + reflexivity.
-    - simpl in a.
-      eapply IHu2 in e3. 2: assumption.
-      destruct e3 as [b'' [[r] ab]].
-      exists (tProd na0 a0 b''). split.
-      + constructor. eapply red_prod_r. eassumption.
-      + simpl. assumption.
-    - simpl in a.
-      eapply IHu3 in e4. 2: assumption.
-      destruct e4 as [u'' [[r] au]].
-      exists (tLetIn na0 t ty u''). split.
-      + constructor. eapply red_letin.
-        all: try solve [ constructor ].
-        eassumption.
-      + simpl. assumption.
+    all: cbn in *; eauto.
   Qed.
 
   Lemma isArity_subst :
@@ -732,6 +700,15 @@ Section Inversions.
       + assumption.
       + simpl in *. eapply IHu3. all: eassumption.
   Qed.
+  
+  Lemma isArity_red Γ u v :
+    red Σ Γ u v ->
+    isArity u ->
+    isArity v.
+  Proof.
+    intros r isar.
+    induction r using red_rect_n1; eauto using isArity_red1.
+  Qed.
 
   Lemma invert_cumul_arity_r :
     forall (Γ : context) (C : term) T,
@@ -740,19 +717,11 @@ Section Inversions.
       Is_conv_to_Arity Σ Γ C.
   Proof.
     intros Γ C T a h.
-    induction h.
-    - eapply eq_term_upto_univ_conv_arity_r. all: eassumption.
-    - forward IHh by assumption. destruct IHh as [v' [[r'] a']].
-      exists v'. split.
-      + constructor. eapply red_trans.
-        * eapply trans_red.
-          -- reflexivity.
-          -- eassumption.
-        * assumption.
-      + assumption.
-    - eapply IHh. eapply isArity_red1. all: eassumption.
-
-
+    apply cumul_alt in h as (?&?&(r1&r2)&?).
+    exists x; split; [constructor; auto|].
+    eapply eq_term_upto_univ_arity_r.
+    2: eassumption.
+    eapply isArity_red; eauto.
   Qed.
 
   Lemma invert_cumul_arity_l :
@@ -762,19 +731,11 @@ Section Inversions.
       Is_conv_to_Arity Σ Γ T.
   Proof.
     intros Γ C T a h.
-    induction h.
-    - eapply eq_term_upto_univ_conv_arity_l. all: eassumption.
-    - eapply IHh. eapply isArity_red1. all: eassumption.
-    - forward IHh by assumption. destruct IHh as [v' [[r'] a']].
-      exists v'. split.
-      + constructor. eapply red_trans.
-        * eapply trans_red.
-          -- reflexivity.
-          -- eassumption.
-        * assumption.
-      + assumption.
-
-
+    apply cumul_alt in h as (?&?&(r1&r2)&?).
+    exists x0; split; [constructor; auto|].
+    eapply eq_term_upto_univ_arity_l.
+    2: eassumption.
+    eapply isArity_red; eauto.
   Qed.
 
   Lemma invert_cumul_prod_l Γ C na A B :

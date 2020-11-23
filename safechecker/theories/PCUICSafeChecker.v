@@ -5,7 +5,7 @@ From MetaCoq.PCUIC Require Import PCUICAst PCUICAstUtils
      PCUICGeneration PCUICReflect PCUICEquality PCUICInversion PCUICValidity
      PCUICWeakening PCUICPosition PCUICCumulativity PCUICInductives PCUICSafeLemmata PCUICSN
      PCUICPretty PCUICArities PCUICConfluence PCUICConversion PCUICWfUniverses.
-From MetaCoq.Bidirectional Require BDTyping BDToPCUIC.
+From MetaCoq.Bidirectional Require BDMinimalTyping BDMinimalToPCUIC.
 From MetaCoq.SafeChecker Require Import PCUICSafeReduce PCUICSafeConversion.
 
 From Equations Require Import Equations.
@@ -124,6 +124,7 @@ Inductive type_error :=
 | NotConvertible (G : universes_graph) (Γ : context) (t u : term)
 | NotASort (t : term)
 | NotAProduct (t t' : term)
+| NotAnArity (t : term)
 | NotAnInductive (t : term)
 | IllFormedFix (m : mfixpoint term) (i : nat)
 | UnsatisfiedConstraints (c : ConstraintSet.t)
@@ -277,6 +278,7 @@ Definition string_of_type_error Σ (e : type_error) : string :=
       "\nin universe graph:\n" ^ print_universes_graph G
   | NotASort t => "Not a sort"
   | NotAProduct t t' => "Not a product"
+  | NotAnArity t => "Not an arity"
   | NotAnInductive t => "Not an inductive"
   | IllFormedFix m i => "Ill-formed recursive definition"
   | UnsatisfiedConstraints c => "Unsatisfied constraints"
@@ -385,39 +387,11 @@ Proof.
     apply destArity_mkApps_None. reflexivity.
 Qed.
 
-Section Typecheck.
-  Context {cf : checker_flags} {Σ : global_env_ext} (HΣ : ∥ wf Σ ∥)
-          (Hφ : ∥ on_udecl Σ.1 Σ.2 ∥)
-          (G : universes_graph) (HG : is_graph_of_uctx G (global_ext_uctx Σ)).
+Section Reduce.
+  Context {cf : checker_flags} {Σ : global_env_ext} (HΣ : ∥ wf Σ ∥).
 
   (* We get stack overflow on Qed after Equations definitions when this is transparent *)
   Opaque reduce_stack_full.
-
-  Local Definition HΣ' : ∥ wf_ext Σ ∥.
-  Proof.
-    destruct HΣ, Hφ; now constructor.
-  Defined.
-
-  Definition isType_welltyped {Γ t}
-    : isType Σ Γ t -> welltyped Σ Γ t.
-  Proof.
-    intros []. now econstructor.
-  Qed.
-
-  Lemma validity_wf {Γ t T} :
-    ∥ wf_local Σ Γ ∥ -> ∥ Σ ;;; Γ |- t : T ∥ -> welltyped Σ Γ T.
-  Proof.
-    destruct HΣ as [wΣ]. intros [wΓ] [X].
-    intros. eapply validity_term in X; try assumption.
-    destruct X. now exists (tSort x).
-  Defined.
-
-  Lemma wat_welltyped {Γ T} :
-    ∥ isType Σ Γ T ∥ -> welltyped Σ Γ T.
-  Proof.
-    destruct HΣ as [wΣ]. intros [X].
-    now apply isType_welltyped.
-  Defined.
 
   Definition hnf := reduce_term RedFlags.default Σ HΣ.
 
@@ -473,20 +447,20 @@ Section Typecheck.
   Qed.
 
   Inductive view_prod : term -> Type :=
-  | view_prod_prod na A b : view_prod (tProd na A b)
+  | view_prod_prod na A B : view_prod (tProd na A B)
   | view_prod_other t : ~isProd t -> view_prod t.
 
   Equations view_prodc (t : term) : view_prod t :=
-    view_prodc (tProd na A b) := view_prod_prod na A b;
+    view_prodc (tProd na A B) := view_prod_prod na A B;
     view_prodc t := view_prod_other t _.
 
   Equations? reduce_to_prod (Γ : context) (t : term) (h : welltyped Σ Γ t)
-    : typing_result (∑ na a b, ∥ red (fst Σ) Γ t (tProd na a b) ∥) :=
+    : typing_result (∑ na A B, ∥ red (fst Σ) Γ t (tProd na A B) ∥) :=
     reduce_to_prod Γ t h with view_prodc t := {
-      | view_prod_prod na a b => ret (na; a; b; sq (refl_red _ _ _));
+      | view_prod_prod na A B => ret (na; A; B; sq (refl_red _ _ _));
       | view_prod_other t _ with inspect (hnf Γ t h) :=
         | exist hnft eq with view_prodc hnft := {
-          | view_prod_prod na a b => ret (na; a; b; _);
+          | view_prod_prod na A B => ret (na; A; B; _);
           | view_prod_other t' _ => raise (NotAProduct t t')
         }
       }.
@@ -497,7 +471,7 @@ Section Typecheck.
 
   Lemma reduce_to_prod_complete {Γ t wt} e :
     reduce_to_prod Γ t wt = TypeError e ->
-    (forall na a b, red Σ Γ t (tProd na a b) -> False).
+    (forall na A B, red Σ Γ t (tProd na A B) -> False).
   Proof.
     funelim (reduce_to_prod Γ t wt); try congruence.
     intros _ na a b r.
@@ -598,6 +572,257 @@ Section Typecheck.
     noconf e0.
     discriminate i0.
   Qed.
+  
+  Definition term_rel : Relation_Definitions.relation (∑ Γ t, welltyped Σ Γ t) :=
+    fun '(Γ2; B; H) '(Γ1; t1; H2) =>
+      ∥∑ na A, red (fst Σ) Γ1 t1 (tProd na A B) × (Γ1,, vass na A) = Γ2∥.
+
+  Definition cod B t := match t with tProd _ _ B' => B = B' | _ => False end.
+
+  Lemma wf_cod : WellFounded cod.
+  Proof using.
+    intros ?. induction a; econstructor; cbn in *; intros; try tauto; subst. eauto.
+  Defined.
+
+  Lemma wf_cod' : WellFounded (Relation_Operators.clos_trans _ cod).
+  Proof using.
+    clear HΣ.
+    eapply Subterm.WellFounded_trans_clos. exact wf_cod.
+  Defined.
+
+  Lemma Acc_no_loop X (R : X -> X -> Prop) t : Acc R t -> R t t -> False.
+  Proof.
+    induction 1. intros. eapply H0; eauto.
+  Qed.
+
+  Ltac sq' := try (destruct HΣ; clear HΣ);
+    repeat match goal with
+          | H : ∥ _ ∥ |- _ => destruct H; try clear H
+          end; try eapply sq.
+
+  Definition wf_reduction_aux : WellFounded term_rel.
+  Proof.
+    intros (Γ & s & H). sq'.
+    induction (normalisation Σ Γ s H) as [s _ IH].
+    induction (wf_cod' s) as [s _ IH_sub] in Γ, H, IH |- *.
+    econstructor.
+    intros (Γ' & B & ?) [(na & A & ? & ?)]. subst.
+    eapply Relation_Properties.clos_rt_rtn1 in r. inversion r.
+      + subst. eapply IH_sub. econstructor. cbn. reflexivity.
+        intros. eapply IH.
+        inversion H0.
+        * subst. econstructor. eapply prod_red_r. eassumption.
+        * subst. eapply cored_red in H2 as [].
+          eapply cored_red_trans. 2: eapply prod_red_r. 2:eassumption.
+          eapply PCUICReduction.red_prod_r. eauto.
+        * constructor. do 2 eexists. now split.
+      + subst. eapply IH.
+        * eapply red_neq_cored.
+          eapply Relation_Properties.clos_rtn1_rt. exact r.
+          intros ?. subst.
+          eapply Relation_Properties.clos_rtn1_rt in X1.
+          eapply cored_red_trans in X0; [| exact X1 ].
+          eapply Acc_no_loop in X0. eauto.
+          eapply @normalisation; eauto.
+        * constructor. do 2 eexists. now split.
+  Grab Existential Variables.
+  - eapply red_welltyped; sq.
+    3:eapply Relation_Properties.clos_rtn1_rt in r; eassumption. all:eauto.
+  - destruct H as [].
+    eapply inversion_Prod in X0 as (? & ? & ? & ? & ?) ; auto.
+    eapply cored_red in H0 as [].
+    econstructor. econstructor. econstructor. eauto.
+    2:reflexivity. econstructor; pcuic. 
+    eapply subject_reduction; eauto.
+  Qed.
+
+  Instance wf_reduction : WellFounded term_rel.
+  Proof.
+    refine (Wf.Acc_intro_generator 1000 _).
+    exact wf_reduction_aux.
+  Defined.
+  Opaque wf_reduction.
+  Opaque Acc_intro_generator.
+  Opaque Wf.Acc_intro_generator.
+  Ltac sq := try (destruct HΣ as [wfΣ]; clear HΣ);
+    repeat match goal with
+          | H : ∥ _ ∥ |- _ => destruct H
+          end; try eapply sq.
+    
+  (* Definition of normalized arities *)
+  Definition arity_ass := aname * term.
+
+  Fixpoint mkNormalArity (l : list arity_ass) (s : Universe.t) : term :=
+    match l with
+    | [] => tSort s
+    | (na, A) :: l => tProd na A (mkNormalArity l s)
+    end.
+  
+  Lemma mkNormalArity_it_mkProd_or_LetIn (l : list arity_ass) (s : Universe.t) :
+    mkNormalArity l s = it_mkProd_or_LetIn (rev_map (fun '(na, A) => vass na A) l) (tSort s).
+  Proof.
+    rewrite rev_map_spec.
+    induction l; auto.
+    cbn.
+    destruct a.
+    rewrite IHl it_mkProd_or_LetIn_app; auto.
+  Qed.
+
+  Lemma isArity_mkNormalArity l s :
+    isArity (mkNormalArity l s).
+  Proof.
+    induction l as [|(na & A) l IH]; cbn; auto.
+  Qed.
+
+  Record conv_arity {Γ T} : Type :=
+    build_conv_arity {
+        conv_ar_context : list arity_ass;
+        conv_ar_univ : Universe.t;
+        conv_ar_red : ∥red Σ Γ T (mkNormalArity conv_ar_context conv_ar_univ)∥
+      }.
+
+  Global Arguments conv_arity : clear implicits.
+  
+  Lemma conv_arity_Is_conv_to_Arity {Γ T} :
+    conv_arity Γ T ->
+    Is_conv_to_Arity Σ Γ T.
+  Proof.
+    intros [asses univ r].
+    eexists.
+    split; [eassumption|].
+    apply isArity_mkNormalArity.
+  Qed.
+
+  Definition conv_arity_or_not Γ T : Type :=
+    (conv_arity Γ T) + {~Is_conv_to_Arity Σ Γ T}.
+  
+  Lemma isArity_red Γ u v :
+    isArity u ->
+    red Σ Γ u v ->
+    isArity v.
+  Proof.
+    intros arity_u r.
+    induction r using red_rect_n1; [easy|].
+    eapply isArity_red1; eassumption.
+  Qed.
+  
+  Lemma Is_conv_to_Arity_red Γ T T' :
+    Is_conv_to_Arity Σ Γ T ->
+    red Σ Γ T T' ->
+    Is_conv_to_Arity Σ Γ T'.
+  Proof.
+    unfold Is_conv_to_Arity.
+    intros [T'' (redT'' & is_arity)] red.
+    sq.
+    destruct (red_confluence wfΣ red X) as (a & reda' & reda'').
+    exists a.
+    split; [easy|].
+    clear -is_arity reda''.
+    eapply isArity_red; eauto.
+  Qed.
+  
+  Inductive view_prod_sort : term -> Type :=
+  | view_prod_sort_prod na A B : view_prod_sort (tProd na A B)
+  | view_prod_sort_sort u : view_prod_sort (tSort u)
+  | view_prod_sort_other t :
+      ~isProd t ->
+      ~isSort t ->
+      view_prod_sort t.
+  
+  Equations view_prod_sortc (t : term) : view_prod_sort t := { 
+    | tProd na A B => view_prod_sort_prod na A B;
+    | tSort u => view_prod_sort_sort u;
+    | t => view_prod_sort_other t _ _
+    }.
+  
+  Equations? (noeqns) reduce_to_arity (Γ : context) (T : term) (wt : welltyped Σ Γ T)
+    : conv_arity_or_not Γ T
+    by wf ((Γ;T; wt) : (∑ Γ t, welltyped Σ Γ t)) term_rel :=
+    reduce_to_arity Γ T wt with inspect (hnf Γ T wt) :=
+      | exist Thnf eqhnf with view_prod_sortc Thnf := {
+        | view_prod_sort_prod na A B with reduce_to_arity (Γ,, vass na A) B _ := {
+          | inleft car => inleft {| conv_ar_context := (na, A) :: conv_ar_context car;
+                                    conv_ar_univ := conv_ar_univ car |};
+          | inright nocar => inright _
+          };
+        | view_prod_sort_sort u => inleft {| conv_ar_context := [];
+                                             conv_ar_univ := u |};
+        | view_prod_sort_other nonar notprod notsort => inright _
+        }.
+  Proof.
+    all: pose proof (@hnf_sound Γ T wt) as [r].
+    all: rewrite <- ?eqhnf in r.
+    all: destruct HΣ as [wf].
+    - destruct wt as (?&typ).
+      eapply subject_reduction in r; eauto.
+      apply inversion_Prod in r as (?&?&?&?&?); auto.
+      econstructor; eauto.
+    - constructor.
+      eexists _, _; split; eauto.
+    - destruct car as [c_ar c_univ [c_red]]; cbn.
+      constructor.
+      etransitivity; eauto.
+      eapply red_prod; eauto.
+    - eapply Is_conv_to_Arity_red in H as (?&[r']&isar); eauto.
+      apply invert_red_prod in r' as (?&?&(->&?)&?); auto.
+      contradiction nocar.
+      eexists; eauto using sq.
+    - constructor; auto.
+    - pose proof (@hnf_complete Γ T wt) as [w].
+      destruct HΣ.
+      apply Is_conv_to_Arity_inv in H as [(na&A&B&[r'])|(u&[r'])]; auto.
+      + eapply red_confluence in r' as (?&r1&r2); eauto.
+        apply invert_red_prod in r2 as (?&?&(->&?)&?); auto.
+        eapply whnf_red_inv in r1; eauto.
+        depelim r1.
+        rewrite H in notprod; auto.
+      + eapply red_confluence in r' as (?&r1&r2); eauto.
+        apply invert_red_sort in r2 as ->.
+        eapply whnf_red_inv in r1; eauto.
+        depelim r1.
+        rewrite H in notsort; cbn in *; auto.
+  Qed.
+  
+  Definition reduce_to_arity_check Γ T wt : typing_result (conv_arity Γ T) :=
+    match reduce_to_arity Γ T wt with
+    | inleft car => ret car
+    | inright _ => raise (NotAnArity T)
+    end.
+End Reduce.
+
+Global Arguments conv_arity : clear implicits.
+
+Section Typecheck.
+  Context {cf : checker_flags} {Σ : global_env_ext} (HΣ : ∥ wf Σ ∥)
+          (Hφ : ∥ on_udecl Σ.1 Σ.2 ∥)
+          (G : universes_graph) (HG : is_graph_of_uctx G (global_ext_uctx Σ)).
+
+  Local Definition HΣ' : ∥ wf_ext Σ ∥.
+  Proof.
+    destruct HΣ, Hφ; now constructor.
+  Defined.
+
+  Definition isType_welltyped {Γ t}
+    : isType Σ Γ t -> welltyped Σ Γ t.
+  Proof.
+    intros []. now econstructor.
+  Qed.
+
+  Lemma validity_wf {Γ t T} :
+    ∥ wf_local Σ Γ ∥ -> ∥ Σ ;;; Γ |- t : T ∥ -> welltyped Σ Γ T.
+  Proof.
+    destruct HΣ as [wΣ]. intros [wΓ] [X].
+    intros. eapply validity_term in X; try assumption.
+    destruct X. now exists (tSort x).
+  Defined.
+
+  Lemma wat_welltyped {Γ T} :
+    ∥ isType Σ Γ T ∥ -> welltyped Σ Γ T.
+  Proof.
+    destruct HΣ as [wΣ]. intros [X].
+    now apply isType_welltyped.
+  Defined.
+
 
   Definition iscumul Γ := isconv_term Σ HΣ Hφ G HG Γ Cumul.
 
@@ -608,11 +833,9 @@ Section Typecheck.
     match iscumul Γ t ht u hu with
     | ConvSuccess => ret _
     | ConvError e => (* fallback *)  (* nico *)
-      let t' := hnf Γ t ht in
-      let u' := hnf Γ u hu in
-      (* match leq_term (snd Σ) t' u' with true => ret _ | false => *)
+      let t' := hnf HΣ Γ t ht in
+      let u' := hnf HΣ Γ u hu in
       raise (NotCumulSmaller G Γ t u t' u' e)
-      (* end *)
     end end.
   Next Obligation.
     symmetry in Heq_anonymous; eapply leqb_term_spec in Heq_anonymous; tea.
@@ -630,7 +853,7 @@ Section Typecheck.
     Program Definition infer_type Γ HΓ t
       : typing_result ({u : Universe.t & ∥ Σ ;;; Γ |- t : tSort u ∥}) :=
       tx <- infer Γ HΓ t ;;
-      u <- reduce_to_sort Γ tx.π1 _ ;;
+      u <- reduce_to_sort HΣ Γ tx.π1 _ ;;
       ret (u.π1; _).
     Next Obligation.
       eapply validity_wf; eassumption.
@@ -653,7 +876,7 @@ Section Typecheck.
       : typing_result (∑ na A B, ∥ Σ ;;; Γ |- t : tProd na A B ∥) :=
       match infer Γ HΓ t with
       | Checked (u; p) =>
-        match reduce_to_prod Γ u _ with
+        match reduce_to_prod HΣ Γ u _ with
         | Checked (na; A; B; r) => Checked (na; A; B; _)
         | TypeError te => TypeError te
         end
@@ -672,7 +895,7 @@ Section Typecheck.
       : typing_result (∑ i u l, ∥ Σ ;;; Γ |- t : mkApps (tInd i u) l ∥) :=
       match infer Γ HΓ t with
       | Checked (T; p) =>
-        match reduce_to_ind Γ T _ with
+        match reduce_to_ind HΣ Γ T _ with
         | Checked (i; u; l; r) => Checked (i; u; l; _)
         | TypeError te => TypeError te
         end
@@ -686,6 +909,21 @@ Section Typecheck.
       constructor.
       eapply type_reduction; eauto.
     Defined.
+    
+    Program Definition infer_scheme Γ HΓ t :
+      typing_result (∑ ctx u, ∥ Σ ;;; Γ |- t : mkNormalArity ctx u ∥) :=
+      '(T; p) <- infer Γ HΓ t;;
+      car <- reduce_to_arity_check HΣ Γ T _;;
+      ret (conv_ar_context car; conv_ar_univ car; _).
+    Next Obligation.
+      eapply validity_wf; eauto.
+    Defined.
+    Next Obligation.
+      destruct car as [? ? [r]].
+      cbn.
+      destruct HΣ, p.
+      constructor; eapply type_reduction; eauto.
+    Defined.
 
     Program Definition infer_cumul Γ HΓ t A (hA : ∥ isType Σ Γ A ∥)
       : typing_result (∥ Σ ;;; Γ |- t : A ∥) :=
@@ -697,6 +935,7 @@ Section Typecheck.
     Next Obligation.
       destruct HΣ, HΓ, hA, X, X0. constructor. eapply type_Cumul'; eassumption.
     Qed.
+    
   End InferAux.
 
 
@@ -723,38 +962,43 @@ Section Typecheck.
   Proof.
     pose proof HΣ'.
     intros HH.
-    refine (check_constraints_spec G (global_ext_uctx Σ) _ _ HG _ HH).
+    refine (check_constraints_sound G (global_ext_uctx Σ) _ _ HG _ HH).
     now apply wf_ext_global_uctx_invariants.
     now apply global_ext_uctx_consistent.
   Qed.
-
+  
   Lemma is_graph_of_uctx_levels (l : Level.t) :
-    wGraph.VSet.mem l (uGraph.wGraph.V G) ->
+    wGraph.VSet.mem l (uGraph.wGraph.V G) <->
     LevelSet.mem l (global_ext_levels Σ).
   Proof.
     unfold is_graph_of_uctx in HG.
-    case_eq (gc_of_uctx (global_ext_uctx Σ)); [intros [lvs cts] XX|intro XX];
-      rewrite -> XX in *; simpl in *; [|contradiction].
-    unfold gc_of_uctx in XX; simpl in XX.
-    destruct (gc_of_constraints Σ); [|discriminate].
-    inversion XX; subst. generalize (global_ext_levels Σ); intros lvs; cbn.
-    clear. intro H. apply LevelSet.mem_spec. apply wGraph.VSet.mem_spec in H.
-    apply LevelSetProp.FM.elements_2.
-    unfold no_prop_levels in H.
-    rewrite LevelSet.fold_spec in H.
-    cut (SetoidList.InA eq l (LevelSet.elements lvs)
-         \/ wGraph.VSet.In l wGraph.VSet.empty). {
-      intros [|H0]; [trivial|].
-      now apply wGraph.VSet.empty_spec in H0. }
-    revert H. generalize (LevelSet.elements lvs), wGraph.VSet.empty; clear.
-    intros lvs; induction lvs; cbn; [intuition|].
-    intros S H. apply IHlvs in H. destruct H as [H|H].
-    - left. now constructor 2.
-    - destruct a; cbn in *. 
-      all: apply wGraph.VSet.add_spec in H; destruct H as [H|H]; [left|now right].
-      all: rewrite H; now constructor.
+      case_eq (gc_of_uctx (global_ext_uctx Σ)); [intros [lvs cts] XX|intro XX];
+        rewrite -> XX in *; simpl in *; [|contradiction].
+      unfold gc_of_uctx in XX; simpl in XX.
+      destruct (gc_of_constraints Σ); [|discriminate].
+      inversion XX; subst. generalize (global_ext_levels Σ); intros lvs; cbn.
+      clear.
+      unfold is_true.
+      rewrite LevelSet.mem_spec.
+      rewrite wGraph.VSet.mem_spec.
+      split.
+      2: { apply no_prop_levels_no_prop_level. }
+      intro H.
+      apply LevelSetProp.FM.elements_2.
+      unfold no_prop_levels in H.
+      rewrite LevelSet.fold_spec in H.
+      cut (SetoidList.InA eq l (LevelSet.elements lvs)
+           \/ wGraph.VSet.In l wGraph.VSet.empty). {
+        intros [|H0]; [trivial|].
+        now apply wGraph.VSet.empty_spec in H0. }
+      revert H. generalize (LevelSet.elements lvs), wGraph.VSet.empty; clear.
+      intros lvs; induction lvs; cbn; [intuition|].
+      intros S H. apply IHlvs in H. destruct H as [H|H].
+      + left. now constructor 2.
+      + destruct a; cbn in *. 
+        all: apply wGraph.VSet.add_spec in H; destruct H as [H|H]; [left|now right].
+        all: rewrite H; now constructor.
   Qed.
-
 
   Program Definition check_consistent_instance uctx u
     : typing_result (consistent_instance_ext Σ uctx u)
@@ -764,15 +1008,13 @@ Section Typecheck.
        | Polymorphic_ctx (inst, cstrs) =>
          let '(inst, cstrs) := AUContext.repr (inst, cstrs) in
          check_eq_true (forallb (fun l => wGraph.VSet.mem l (uGraph.wGraph.V G)) u)
-                       (Msg "instance does not have the right length") ;;
-         (* check_eq_true (forallb (fun l => LevelSet.mem l lvs) u) ;; *)
+                       (Msg "not all levels are contained in the graph") ;;
          X <- check_eq_nat #|u| #|inst|
                           (Msg "instance does not have the right length");;
          match check_constraints G (subst_instance_cstrs u cstrs) with
          | true => ret (conj _ _)
          | false => raise (Msg "ctrs not satisfiable")
          end
-         (* #|u| = #|inst| /\ valid_constraints φ (subst_instance_cstrs u cstrs) *)
        end.
   Next Obligation.
     eapply forallb_All in H. eapply All_forallb'; tea.
@@ -848,8 +1090,7 @@ Section Typecheck.
     Context (all_types : ∥ All (fun d => isType Σ Γ (dtype d)) mfix ∥).
 
     Definition fix_ok d :=
-      ∥ Σ ;;; Γ ,,, fix_context mfix |- dbody d : lift0 #|fix_context mfix| (dtype d) ∥
-      × isLambda (dbody d) = true.
+      ∥ Σ ;;; Γ ,,, fix_context mfix |- dbody d : lift0 #|fix_context mfix| (dtype d) ∥.
     
     Equations check_fix_bodies_aux
               (mfix : mfixpoint term) (types : ∥ All (fun d => isType Σ Γ (dtype d)) mfix∥)
@@ -858,12 +1099,9 @@ Section Typecheck.
       check_fix_bodies_aux (def :: mfix') types
         with infer_cumul infer (Γ ,,, fix_context mfix) _
                          (dbody def) (lift0 #|fix_context mfix| (dtype def)) _ := {
-        | Checked t with inspect (isLambda (dbody def)) := {
-          | exist true islam with check_fix_bodies_aux mfix' _ := {
-            | Checked a => Checked (All_cons (pair t (eq_sym islam)) a);
-            | TypeError e2 => TypeError e2
-            };
-          | exist false notlam => TypeError (Msg ("not a lambda"))
+        | Checked t with check_fix_bodies_aux mfix' _ := {
+          | Checked a => Checked (All_cons t a);
+          | TypeError e2 => TypeError e2
           };
         | TypeError e1 => TypeError e1
         }.
@@ -886,7 +1124,7 @@ Section Typecheck.
     Definition check_fix_bodies := check_fix_bodies_aux mfix all_types.
 
   End check_fix.
-    
+  
   Program Fixpoint infer (Γ : context) (HΓ : ∥ wf_local Σ Γ ∥) (t : term) {struct t}
     : typing_result ({ A : term & ∥ Σ ;;; Γ |- t : A ∥ }) :=
     match t with
@@ -961,43 +1199,41 @@ Section Typecheck.
             (Msg "Case on coinductives disallowed") ;;
       check_eq_true (ind_npars decl =? par)
                     (Msg "not the right number of parameters") ;;
-      pty <- infer Γ HΓ p ;;
-      match destArity [] pty.π1 with
-      | None => raise (Msg "the type of the return predicate of a Case is not an arity")
-      | Some (pctx, ps) =>
-        check_eq_true
-          (leb_sort_family (universe_family ps) (ind_kelim body))
-          (Msg "cannot eliminate over this sort") ;;
-        let params := firstn par args in
-        match build_case_predicate_type ind decl body params u ps with
-        | None => raise (Msg "failure in build_case_predicate_type")
-        | Some pty' =>
-          (* We could avoid one useless sort comparison by only comparing *)
-          (* the contexts [pctx] and [indctx] (what is done in Coq). *)
-          match iscumul Γ pty.π1 _ pty' _ with
-          | ConvError e => raise (NotCumulSmaller G Γ pty.π1 pty' pty.π1 pty' e)
-          | ConvSuccess =>
-            match map_option_out (build_branches_type ind decl body params u p) with
-            | None => raise (Msg "failure in build_branches_type")
-            | Some btys =>
-              let btyswf : ∥ All (isType Σ Γ ∘ snd) btys ∥ := _ in
-              (fix check_branches (brs btys : list (nat * term))
-                (HH : ∥ All (isType Σ Γ ∘ snd) btys ∥) {struct brs}
-                  : typing_result
-                    (All2 (fun br bty => br.1 = bty.1 /\ ∥ Σ ;;; Γ |- br.2 : bty.2 ∥) brs btys)
-                          := match brs, btys with
-                             | [], [] => ret All2_nil
-                             | (n, t) :: brs , (m, A) :: btys =>
-                               W <- check_dec (Msg "not nat eq")
-                                             (EqDecInstances.nat_eqdec n m) ;;
-                               Z <- infer_cumul infer Γ HΓ t A _ ;;
-                               X <- check_branches brs btys _ ;;
-                               ret (All2_cons (conj _ _) X)
-                             | [], _ :: _
-                             | _ :: _, [] => raise (Msg "wrong number of branches")
-                             end) brs btys btyswf ;;
-                ret (mkApps p (List.skipn par args ++ [c]); _)
-            end
+      IS <- infer_scheme infer Γ HΓ p ;;
+      let '(pctx; IS') := IS in let '(ps; typ_p) := IS' in
+      check_eq_true
+        (leb_sort_family (universe_family ps) (ind_kelim body))
+        (Msg "cannot eliminate over this sort") ;;
+      let pty := mkNormalArity pctx ps in
+      let params := firstn par args in
+      match build_case_predicate_type ind decl body params u ps with
+      | None => raise (Msg "failure in build_case_predicate_type")
+      | Some pty' =>
+        (* We could avoid one useless sort comparison by only comparing *)
+        (* the contexts [pctx] and [indctx] (what is done in Coq). *)
+        match iscumul Γ pty _ pty' _ with
+        | ConvError e => raise (NotCumulSmaller G Γ pty pty' pty pty' e)
+        | ConvSuccess =>
+          match map_option_out (build_branches_type ind decl body params u p) with
+          | None => raise (Msg "failure in build_branches_type")
+          | Some btys =>
+            let btyswf : ∥ All (isType Σ Γ ∘ snd) btys ∥ := _ in
+            (fix check_branches (brs btys : list (nat * term))
+              (HH : ∥ All (isType Σ Γ ∘ snd) btys ∥) {struct brs}
+                : typing_result
+                  (All2 (fun br bty => br.1 = bty.1 /\ ∥ Σ ;;; Γ |- br.2 : bty.2 ∥) brs btys)
+                        := match brs, btys with
+                           | [], [] => ret All2_nil
+                           | (n, t) :: brs , (m, A) :: btys =>
+                             W <- check_dec (Msg "not nat eq")
+                                           (EqDecInstances.nat_eqdec n m) ;;
+                             Z <- infer_cumul infer Γ HΓ t A _ ;;
+                             X <- check_branches brs btys _ ;;
+                             ret (All2_cons (conj _ _) X)
+                           | [], _ :: _
+                           | _ :: _, [] => raise (Msg "wrong number of branches")
+                           end) brs btys btyswf ;;
+              ret (mkApps p (List.skipn par args ++ [c]); _)
           end
         end
       end
@@ -1026,6 +1262,8 @@ Section Typecheck.
       | Some decl =>
         XX <- check_fix_types infer Γ HΓ mfix;;
         YY <- check_fix_bodies infer Γ HΓ mfix XX;;
+        check_eq_true (forallb (fun d => isLambda (dbody d)) mfix)
+                      (Msg "all fixes must start with a lambda");;
         guarded <- check_eq_true (fix_guard mfix) (Msg "Unguarded fixpoint") ;;
         wffix <- check_eq_true (wf_fixpoint Σ.1 mfix) (Msg "Ill-formed fixpoint: not defined on a mutually inductive family") ;;
         ret (dtype decl; _)
@@ -1116,33 +1354,34 @@ Section Typecheck.
   (* tCase *)
   Next Obligation. simpl; eauto using validity_wf. Qed.
   Next Obligation.
-    destruct X, X8. sq.
+    destruct X10. sq.
     change (eqb ind I = true) in H0.
     destruct (eqb_spec ind I) as [e|e]; [destruct e|discriminate].
     change (eqb (ind_npars d) par = true) in H1.
     destruct (eqb_spec (ind_npars d) par) as [e|e]; [|discriminate].
     rename Heq_anonymous into HH. symmetry in HH.
     simpl in *.
-    eapply validity in X5; eauto.
+    eapply validity in X7; eauto.
     rewrite <- e in HH.
     eapply PCUICInductiveInversion.WfArity_build_case_predicate_type in HH; eauto.
     destruct HH as [[s Hs] ?]. eexists; eauto.
-    eapply validity in t; eauto.
-    generalize (PCUICClosed.destArity_spec [] pty).
-    rewrite -Heq_anonymous0 /=. intros ->.
-    eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in t; eauto.
-    eapply isType_wf_universes in t. simpl in t.
-    now exact (PCUICWfUniverses.reflect_bP (wf_universe_reflect _ _) t). auto.
+    rewrite mkNormalArity_it_mkProd_or_LetIn in X1.
+    eapply validity in X1; eauto.
+    eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in X1; eauto.
+    eapply isType_wf_universes in X1. simpl in X1.
+    now exact (PCUICWfUniverses.reflect_bP (wf_universe_reflect _ _) X1). auto.
   Qed.
 
   Next Obligation.
-    symmetry in Heq_anonymous2.
-    unfold iscumul in Heq_anonymous2. simpl in Heq_anonymous2.
-    apply isconv_term_sound in Heq_anonymous2.
-    red in Heq_anonymous2.
+    symmetry in Heq_anonymous1.
+    unfold iscumul in Heq_anonymous1. simpl in Heq_anonymous1.
+    apply isconv_term_sound in Heq_anonymous1.
+    red in Heq_anonymous1.
     noconf Heq_I''.
     noconf Heq_I'. noconf Heq_I.
     noconf Heq_d. noconf Heq_d'.
+    noconf Heq_IS.
+    noconf Heq_IS'.
     simpl in *; sq.
     change (eqb ind I = true) in H0.
     destruct (eqb_spec ind I) as [e|e]; [destruct e|discriminate H0].
@@ -1150,45 +1389,41 @@ Section Typecheck.
     destruct (eqb_spec (ind_npars d) par) as [e|e]; [|discriminate]; subst.
     assert (wfΣ : wf_ext Σ) by (split; auto).
     have val:= validity_term wfΣ H.
-    eapply type_Cumul' in X; [| |eassumption].
+    eapply type_Cumul' in typ_p; [| |eassumption].
     2:{ eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
-        eapply validity in X; eauto.
-        generalize (PCUICClosed.destArity_spec [] pty).
-        rewrite -Heq_anonymous0 /=. intros ->.
-        eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in X; eauto.
-        eapply isType_wf_universes in X. simpl in X.
-        now exact (PCUICWfUniverses.reflect_bP (wf_universe_reflect _ _) X). auto. }
-    have [pctx' da] : (∑ pctx', destArity [] pty' =  Some (pctx', ps)).
-    { symmetry in Heq_anonymous1.
-      unshelve eapply (PCUICInductives.build_case_predicate_type_spec (Σ.1, ind_universes d)) in Heq_anonymous1 as [parsubst [_ ->]].
+        eapply validity in typ_p; eauto.
+        rewrite mkNormalArity_it_mkProd_or_LetIn in typ_p.
+        eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in typ_p; eauto.
+        eapply isType_wf_universes in typ_p. simpl in typ_p.
+        now exact (PCUICWfUniverses.reflect_bP (wf_universe_reflect _ _) typ_p). auto. }
+    have [pctx' da] : (∑ pctx', destArity [] pty' =  Some (pctx', X0)).
+    { symmetry in Heq_anonymous0.
+      unshelve eapply (PCUICInductives.build_case_predicate_type_spec (Σ.1, ind_universes d)) in Heq_anonymous0 as [parsubst [_ ->]].
       eauto. eapply (PCUICWeakeningEnv.on_declared_inductive wfΣ) in HH as [? ?]. eauto.
       eexists. rewrite !destArity_it_mkProd_or_LetIn; simpl. reflexivity. }
-    eapply PCUICInductiveInversion.build_branches_type_wt. 6:eapply X. all:eauto.
+    eapply PCUICInductiveInversion.build_branches_type_wt. 6:eapply typ_p. all:eauto.
   Defined.
 
   Next Obligation.
-    rename Heq_anonymous2 into XX2.
-    symmetry in XX2. simpl in *. eapply isconv_sound in XX2.
-    change (eqb ind ind' = true) in H0.
-    destruct (eqb_spec ind ind') as [e|e]; [destruct e|discriminate H0].
-    change (eqb (ind_npars decl) par = true) in H1.
-    destruct (eqb_spec (ind_npars decl) par) as [e|e]; [|discriminate]; subst.
-    depelim HH.
-    sq. now depelim X9.
+    sq.
+    depelim HH; auto.
   Defined.
   Next Obligation.
-    sq. now depelim HH.
+    sq.
+    depelim HH; auto.
   Defined.
 
   (* The obligation tactic removes a useful let here. *)
   Obligation Tactic := idtac.
   Next Obligation.
     intros. clearbody btyswf. idtac; Program.Tactics.program_simplify.
-    symmetry in Heq_anonymous2.
-    unfold iscumul in Heq_anonymous2. simpl in Heq_anonymous2.
-    apply isconv_term_sound in Heq_anonymous2.
+    symmetry in Heq_anonymous1.
+    unfold iscumul in Heq_anonymous1. simpl in Heq_anonymous1.
+    apply isconv_term_sound in Heq_anonymous1.
     noconf Heq_I''. noconf Heq_I'. noconf Heq_I.
-    noconf Heq_d. noconf Heq_d'. simpl in *.
+    noconf Heq_d. noconf Heq_d'.
+    noconf Heq_IS. noconf Heq_IS'.
+    simpl in *.
     assert (∥ All2 (fun x y  => ((fst x = fst y) *
                               (Σ;;; Γ |- snd x : snd y) * isType Σ Γ y.2)%type) brs btys ∥). {
       solve_all. simpl in *.
@@ -1199,18 +1434,17 @@ Section Typecheck.
     change (eqb (ind_npars d) par = true) in H1.
     destruct (eqb_spec (ind_npars d) par) as [e|e]; [|discriminate]; subst.
     assert (wfΣ : wf_ext Σ) by (split; auto).
-    eapply type_Cumul' in X; eauto.
+    eapply type_Cumul' in typ_p; eauto.
     2:{ eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
         now eapply validity in H.
-        eapply validity in X; eauto.
-        generalize (PCUICClosed.destArity_spec [] pty).
-        rewrite -Heq_anonymous0 /=. intros ->.
-        eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in X; eauto.
-        eapply isType_wf_universes in X. simpl in X.
-        now exact (PCUICWfUniverses.reflect_bP (wf_universe_reflect _ _) X). auto. }
-    have [pctx' da] : (∑ pctx', destArity [] pty' =  Some (pctx', ps)).
-    { symmetry in Heq_anonymous1.
-      unshelve eapply (PCUICInductives.build_case_predicate_type_spec (Σ.1, ind_universes d)) in Heq_anonymous1 as [parsubst [_ ->]].
+        eapply validity in typ_p; eauto.
+        rewrite mkNormalArity_it_mkProd_or_LetIn in typ_p.
+        eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in typ_p; eauto.
+        eapply isType_wf_universes in typ_p. simpl in typ_p.
+        now exact (PCUICWfUniverses.reflect_bP (wf_universe_reflect _ _) typ_p). auto. }
+    have [pctx' da] : (∑ pctx', destArity [] pty' =  Some (pctx', X0)).
+    { symmetry in Heq_anonymous0.
+      unshelve eapply (PCUICInductives.build_case_predicate_type_spec (Σ.1, ind_universes d)) in Heq_anonymous0 as [parsubst [_ ->]].
       eauto. eapply (PCUICWeakeningEnv.on_declared_inductive wfΣ) in HH as [? ?]. eauto.
       eexists. rewrite !destArity_it_mkProd_or_LetIn; simpl. reflexivity. }
     eapply type_Case with (pty0:=pty'); tea.
@@ -1233,16 +1467,26 @@ Section Typecheck.
 
   (* tFix *)
   Next Obligation.
-    assert (∥ All (fun d => ((Σ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d)) * (isLambda (dbody d) = true))%type) mfix ∥). {
-      eapply All_sq, All_impl.  exact YY.
-      cbn; intros ? []. sq; now constructor. }
+    assert (∥ All
+              (fun d =>
+                 ((Σ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d))
+                  * (isLambda (dbody d) = true))%type) mfix ∥).
+    { destruct XX.
+      apply All_sq.
+      apply forallb_All in H.
+      apply (All_impl (All_mix YY H)).
+      intros ? ([]&islam); constructor; auto. }
     sq; econstructor; try eassumption.
     symmetry; eassumption.
   Qed.
 
   (* tCoFix *)
   Next Obligation.
-    assert (∥ All (fun d => ((Σ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d)))%type) mfix ∥). {
+    assert (∥ All
+              (fun d =>
+                 (Σ;;; Γ ,,, fix_context mfix |- dbody d : (lift0 #|fix_context mfix|) (dtype d))%type)
+              mfix ∥).
+    {
       eapply All_sq, All_impl.  exact YY.
       now cbn; intros ? []. }
     sq; econstructor; try eassumption.
@@ -1293,7 +1537,7 @@ Section Typecheck.
   Program Definition check_isType Γ (HΓ : ∥ wf_local Σ Γ ∥) A
     : typing_result (∥ isType Σ Γ A ∥) :=
     s <- infer Γ HΓ A ;;
-    s' <- reduce_to_sort Γ s.π1 _ ;;
+    s' <- reduce_to_sort HΣ Γ s.π1 _ ;;
     ret _.
   Next Obligation. now eapply validity_wf. Defined.
   Next Obligation. destruct X0. sq. eexists. eapply type_reduction; tea. Defined.
@@ -1752,7 +1996,7 @@ Definition principal_ind {cf:checker_flags} Σ Γ t ind u args :=
 
 Definition Pcheck {cf:checker_flags} Σ Γ t T :=
   (forall wfΣ onud G isg wfΓ T' isT,
-      Σ ;;; Γ |- T' <= T ->
+      Σ ;;; Γ |- T <= T' ->
       match @infer_cumul _ Σ wfΣ onud G isg (@infer _ Σ wfΣ onud G isg) Γ wfΓ t T' isT with
       | Checked _ => True
       | TypeError _ => False
@@ -1787,12 +2031,30 @@ Definition Pind {cf:checker_flags} Σ Γ (ind : inductive) t (u : Instance.t) (a
       end).
 
 Definition PΓ (cf : checker_flags) (Σ : global_env_ext) (Γ : context)
-           (wfΓ : BDTyping.All_local_env
-                    (BDTyping.lift_sorting BDTyping.checking BDTyping.infering_sort Σ) Γ) :=
+           (wfΓ : BDMinimalTyping.All_local_env
+                    (BDMinimalTyping.lift_sorting BDMinimalTyping.checking BDMinimalTyping.infering_sort Σ) Γ) :=
   True.
 
 Ltac simpl_infer :=
   cbn -[infer_cumul infer_type infer_applicable infer_constructor].
+
+Ltac specialize_IHs :=
+  match goal with
+  | [H: context[infer_cumul _ _ _ _ _ _ _ ?t _ _] |-
+     context[infer_cumul ?wfΣ ?onud ?G ?isg ?inf ?Γ ?wfΓ ?t ?T ?isT]] =>
+    specialize (H wfΣ onud G isg wfΓ T isT)
+  | [H: context[infer _ _ _ _ _ _ ?t] |- context[infer ?wfΣ ?onud ?G ?isg ?Γ ?wfΓ ?t]] =>
+    specialize (H wfΣ onud G isg wfΓ)
+  | [H: context[infer_type _ _ _ _ ?T] |-
+     context[infer_type ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?T]] =>
+    specialize (H wfΣ onud G isg wfΓ)
+  | [H: context[infer_applicable _ _ _ _ ?t] |-
+     context[infer_applicable ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?t]] =>
+    specialize (H wfΣ onud G isg wfΓ)
+  | [H: context[infer_constructor _ _ _ _ ?t] |-
+     context[infer_constructor ?wfΣ (infer ?wfΣ ?onud ?G ?isg) ?Γ ?wfΓ ?t]] =>
+    specialize (H wfΣ onud G isg wfΓ)
+  end.
 
 Ltac tac :=
   simpl_infer;
@@ -1836,6 +2098,15 @@ Ltac program_rewrite eq :=
     end
   end.
 
+Ltac program_destruct t :=
+  let eqid := fresh "peq" in
+  generalize (@eq_refl _ t);
+  intros eqid;
+  let pid := fresh "p" in
+  set (pid := t) at 1;
+  change (pid = t) in eqid;
+  destruct pid.
+
 Lemma cumul_Ind_Ind_inv {cf:checker_flags} {Σ : global_env_ext} {wfΣ : wf Σ} {Γ ind u args ind' u' args'} : 
   Σ ;;; Γ |- mkApps (tInd ind u) args <= mkApps (tInd ind' u') args' ->
   eq_inductive ind ind' *
@@ -1853,14 +2124,167 @@ Proof.
   eapply (All2_impl red'). intros x y; apply red_conv.
 Qed.
 
-Lemma bd_completeness {cf:checker_flags} :
-  BDTyping.env_prop Pcheck Pinfer Psort Pprod Pind PΓ.
+Arguments LevelSet.mem : simpl never.
+
+Lemma declared_subst_instance_level inst l levels :
+  LevelSet.In
+    l
+    (LevelSet.union
+       (fold_right LevelSet.add LevelSet.empty (map Level.Var (seq 0 #|inst|)))
+       levels) ->
+  Forall (fun l => LevelSet.mem l levels) inst ->
+  declared Level.lSet levels ->
+  declared (subst_instance_level inst l) levels.
 Proof.
-  apply BDTyping.typing_ind_env; intros;
+  intros isin all declset.
+  apply LevelSet.union_spec in isin.
+  destruct l; cbn in *.
+  - destruct isin; auto.
+  - destruct isin; auto.
+    clear -H.
+    exfalso.
+    revert H; generalize 0; induction #|inst|; intros ? H.
+    + apply LevelSet.empty_spec in H; auto.
+    + apply LevelSet.add_spec in H as [|]; eauto; discriminate.
+  - rewrite nth_nth_error.
+    destruct nth_error eqn:nth; auto.
+    eapply nth_error_forall in nth; eauto.
+    apply LevelSet.mem_spec; auto.
+Qed.
+
+Lemma mapi_seq {X Y} (f : nat -> X) (ys : list Y) :
+  mapi (fun i _ => f i) ys = map f (seq 0 #|ys|).
+Proof.
+  unfold mapi.
+  generalize 0.
+  induction ys; intros n; auto.
+  cbn; f_equal; auto.
+Qed.
+
+Lemma check_consistent_instance_complete {cf:checker_flags} Σ wfΣ udecl u onud G isg te :
+  consistent_instance_ext Σ udecl u ->
+  PCUICWeakeningEnv.on_udecl_prop Σ udecl ->
+  @check_consistent_instance _ Σ wfΣ onud G isg udecl u = TypeError te ->
+  False.
+Proof.
+  intros cons (cstrs&_).
+  unfold check_consistent_instance in *.
+  destruct udecl.
+  - cbn in cons.
+    destruct check_eq_nat eqn:c; [intros [=]|now rewrite cons in c].
+  - cbn in cons.
+    destruct cons as (?&?&?).
+    destruct cst.
+    destruct check_eq_true eqn:all_mem; cbn.
+    2: { intros _.
+         eapply forallb_impl in H.
+         - erewrite H in all_mem; discriminate all_mem.
+         - cbn.
+           intros ? ? ?.
+           eapply is_graph_of_uctx_levels; eauto. }
+    destruct check_eq_nat eqn:len; cbn.
+    2: { rewrite mapi_length H0 in len.
+         cbn in len.
+         unfold check_eq_nat in len.
+         revert len.
+         program_destruct (Nat.eq_dec #|l| #|l|); intros [=].
+         congruence. }
+    program_destruct (check_constraints G (subst_instance_cstrs u t));
+      intros [=].
+    change (global_ext_constraints Σ) with (global_ext_uctx Σ).2 in H1.
+    eapply check_constraints_complete in H1; eauto.
+    1: apply wf_ext_global_uctx_invariants; sq; eauto with pcuic.
+    1: apply global_ext_uctx_consistent; sq; eauto with pcuic.
+    intros c cin.
+    apply PCUICUnivSubstitution.In_subst_instance_cstrs in cin as (?&->&?).
+    cbn in *.
+    apply cstrs in H2.
+    destruct x as ((?&?)&?).
+    cbn in *.
+    apply forallb_Forall in H.
+    rewrite mapi_seq in H2.
+    rewrite <- H0 in H2.
+    assert (declared Level.lSet (global_ext_levels Σ)).
+    { apply LevelSet.union_spec; right.
+      apply LevelSet.mem_spec, global_levels_Set. }
+    split; apply declared_subst_instance_level; auto.
+    1: destruct H2 as (isin&_).
+    2: destruct H2 as (_&isin).
+    all: apply LevelSet.union_spec.
+    all: apply LevelSet.union_spec in isin as [|isin];
+      [now auto|].
+    all: right.
+    all: apply LevelSet.union_spec; right; auto.
+Qed.
+
+Lemma convert_leq_complete {cf:checker_flags} Σ wfΣ onud G isg Γ t u wtt wtu te :
+  @convert_leq _ Σ wfΣ onud G isg Γ t u wtt wtu = TypeError te ->
+  Σ ;;; Γ |- t <= u ->
+  False.
+Proof.
+  unfold convert_leq.
+  program_destruct (leqb_term Σ G t u); [intros [=]|].
+  unfold iscumul.
+  program_destruct (isconv_term Σ wfΣ onud G isg Γ Cumul t wtt u wtu);
+    [intros [=]|].
+  intros _ cum.
+  apply eq_sym, isconv_term_complete in peq0.
+  apply sq, peq0 in cum; auto.
+Qed.
+
+Lemma check_fix_types_complete {cf:checker_flags} Σ wfΣ onud G isg Γ wfΓ mfix te :
+  All (fun d =>
+         ∑ u, BDMinimalTyping.infering_sort Σ Γ (dtype d) u
+              × Psort Σ Γ (dtype d) u) mfix ->
+  @check_fix_types _ Σ wfΣ (infer wfΣ onud G isg) Γ wfΓ mfix = TypeError te ->
+  False.
+Proof.
+  funelim (check_fix_types _ _ _ _ _); intros all [=].
+  - depelim all.
+    destruct s as (u&infu&IH).
+    red in IH.
+    epose proof (IH _ _ _ _ _) as IH.
+    now erewrite Heq in IH.
+  - depelim all.
+    eauto.
+Qed.
+
+Lemma check_fix_bodies_complete {cf:checker_flags} Σ wfΣ onud G isg Γ wfΓ mfix types te :
+  All (fun d =>
+         BDMinimalTyping.checking Σ (Γ,,, fix_context mfix) (dbody d)
+                                  (lift0 #|fix_context mfix| (dtype d))
+         × Pcheck Σ (Γ,,, fix_context mfix) (dbody d) (lift0 #|fix_context mfix| (dtype d)))
+      mfix ->
+  @check_fix_bodies _ Σ wfΣ onud G isg (infer wfΣ onud G isg) Γ wfΓ mfix types = TypeError te ->
+  False.
+Proof.
+  unfold check_fix_bodies.
+  generalize mfix at 1 2 3 4 6 8 10, types at 1.
+  intros mfix' types'.
+  funelim (check_fix_bodies_aux _ _ _ _ _ _ _ _ _ _ _); intros all [=].
+  - destruct types as [types].
+    depelim types.
+    depelim all.
+    destruct p as (checkbod&IH).
+    red in IH.
+    unshelve epose proof (IH _ _ _ _ _ _ _ _) as IH.
+    9: erewrite Heq in IH; eauto.
+    reflexivity.
+  - destruct types as [types].
+    depelim types.
+    depelim all.
+    eapply Hind; eauto.
+Qed.
+
+Lemma bd_completeness {cf:checker_flags} :
+  BDMinimalTyping.env_prop Pcheck Pinfer Psort Pprod Pind PΓ.
+Proof.
+  apply BDMinimalTyping.typing_ind_env; intros;
     unfold Pcheck, Pinfer, Psort, Pprod, Pind, PΓ in *; intros.
+  all: clear PΣ.
   - auto.
   - cbn.
-    program_rewrite H0.
+    program_rewrite H.
     destruct wfΣ0.
     constructor.
     red.
@@ -1874,81 +2298,124 @@ Proof.
     constructor; red; intros.
     eapply inversion_Sort in X0 as (?&?&?); auto.
   - tac.
-    sq; red; intros T ?.
-    eapply inversion_Prod in X1 as (?&?&?&?&?); auto.
-    eapply H0 in t0.
-    eapply cumul_Sort_l_inv in c as (?&?&?).
-    apply cumul_Sort_inv in t0.
-    eapply H1 in t1.
-    eapply cumul_Sort_inv in t1.
-    eapply red_cumul_cumul_inv; eauto.
+    destruct wfΣ0.
+    destruct s as [typs], H as [princt], s0 as [typb], H0 as [princb].
     constructor.
-    constructor.
-    etransitivity; [|eassumption].
-    eapply leq_universe_product_mon; eauto.
+    intros T typ.
+    eapply inversion_Prod in typ as (?&?&dom&cod&prod); auto.
+    cbn.
+    apply princt in dom.
+    apply princb in cod.
+    etransitivity; eauto.
+    apply cumul_Sort_inv in dom.
+    apply cumul_Sort_inv in cod.
+    do 2 constructor.
+    apply leq_universe_product_mon; auto.
   - tac.
-    sq; red; intros T ?.
-    eapply inversion_Lambda in X1 as (?&?&?&?&?); auto.
+    destruct wfΣ0, s0 as [typt], H as [princt], s1 as [typb], H0 as [princb].
+    constructor; intros T typ.
+    eapply inversion_Lambda in typ as (?&?&typt'&typb'&cum); auto.
+    cbn.
     etransitivity; [|eassumption].
     eapply congr_cumul_prod; auto.
   - tac.
-    specialize (H1 ltac:(reflexivity)).
+    specialize (H0 ltac:(reflexivity)).
     destruct infer_cumul; [|contradiction].
     tac.
-    sq; red; intros T ?.
-    eapply inversion_LetIn in X2 as (?&?&?&?&?&?); auto.
-    apply H0 in t0.
-    apply H2 in t2.
+    sq.
+    intros ? typ.
+    eapply inversion_LetIn in typ as (?&?&?&?&?&?); auto.
     etransitivity; [|eassumption].
     eapply cumul_LetIn_bo; eauto.
   - tac.
-    apply BDToPCUIC.Bidirectional_to_PCUIC in X; auto.
     destruct wfΣ0.
-    sq.
-    apply H0 in X.
-    eapply cumul_Prod_Prod_inv in X as (?&?&?); auto.
-    forward H1.
-    1: { eapply conv_cumul; eauto. }
+    destruct H as [princt], s as [typt].
+    apply BDMinimalToPCUIC.bidirectional_to_PCUIC, princt in X; eauto with pcuic.
+    apply cumul_Prod_Prod_inv in X as (?&?&?); auto.
+    forward H0.
+    { cbn.
+      eapply conv_cumul; eauto.
+      symmetry; auto. }
     destruct infer_cumul; [|easy].
+    cbn in *.
     sq.
-    intros T ?.
-    apply inversion_App in X as (?&?&?&?&?&?); auto.
+    intros T typ.
+    apply inversion_App in typ as (?&?&?&typt'&?&?); auto.
     etransitivity; [|eassumption].
-    eapply H0 in t0.
-    eapply cumul_Prod_Prod_inv in t0 as (?&?&?); auto.
+    eapply princt in typt'.
+    eapply cumul_Prod_Prod_inv in typt' as (?&?&?); auto.
     eapply PCUICSubstitution.substitution_cumul0; eauto.
   - cbn.
-    unfold BDTyping.declared_constant in H0.
-    program_rewrite H0.
-    admit.
-  - simpl_infer.
-    unfold BDTyping.declared_inductive, BDTyping.declared_minductive in H0.
-    destruct H0 as (eq&?).
-    unfold lookup_ind_decl.
-    program_rewrite eq.
-    program_rewrite H0.
+    assert (isdecl := H).
+    unfold BDMinimalTyping.declared_constant in H.
+    program_destruct (lookup_env Σ.1 cst);
+      rewrite <- peq in H; noconf H.
     cbn.
-    admit.
+    destruct check_consistent_instance eqn:cons.
+    2: { destruct wfΣ0.
+         eapply check_consistent_instance_complete; eauto.
+         symmetry in peq.
+         eapply PCUICWeakeningEnv.weaken_lookup_on_global_env' in peq; eauto. }
+    
+    destruct wfΣ0.
+    constructor.
+    intros T typ.
+    apply inversion_Const in typ as (?&?&?&?&?); auto.
+    eapply PCUICWeakeningEnv.declared_constant_inj in isdecl; eauto.
+    subst; auto.
   - simpl_infer.
-    repeat red in H0.
-    destruct H0 as ((look_mind&look_oib)&look_ctor).
+    assert (isdecl := H).
+    unfold BDMinimalTyping.declared_inductive, BDMinimalTyping.declared_minductive in H.
+    destruct H as (look_mind&look_oib).
+    unfold lookup_ind_decl.
+    program_rewrite look_mind.
+    program_rewrite look_oib.
+    cbn.
+    destruct check_consistent_instance eqn:cons.
+    2: { destruct wfΣ0.
+         eapply check_consistent_instance_complete; eauto.
+         symmetry in eq.
+         eapply PCUICWeakeningEnv.weaken_lookup_on_global_env' in eq; eauto. }
+    destruct wfΣ0.
+    constructor.
+    intros T typ.
+    apply inversion_Ind in typ as (?&?&?&isdecl'&?&?); auto.
+    destruct (PCUICWeakeningEnv.declared_inductive_inj isdecl isdecl') as (->&->).
+    auto.
+  - simpl_infer.
+    assert (isdecl := H).
+    destruct H as ((look_mind&look_oib)&look_ctor).
     red in look_mind.
     unfold lookup_ind_decl.
     cbn in *.
     program_rewrite look_mind.
     program_rewrite look_oib.
     program_rewrite look_ctor.
-    admit.
+    destruct check_consistent_instance eqn:cons.
+    2: { destruct wfΣ0.
+         eapply check_consistent_instance_complete; eauto.
+         clear -eq w.
+         symmetry in eq.
+         eapply PCUICWeakeningEnv.weaken_lookup_on_global_env' in eq; eauto. }
+    destruct wfΣ0.
+    constructor.
+    intros T typ.
+    apply inversion_Construct in typ as (?&?&?&?&isdecl'&?&?); auto.
+    destruct (PCUICWeakeningEnv.declared_constructor_inj isdecl isdecl') as (->&->&->).
+    auto.
   - tac.
-    apply BDToPCUIC.Bidirectional_to_PCUIC in X0; auto.
-    sq.
-    apply H1 in X0.
-    eapply cumul_Ind_Ind_inv in X0 as ((?&?)&?).
+    destruct wfΣ0.
+    destruct H0 as [princc].
+    destruct s as [typc].
+    apply BDMinimalToPCUIC.bidirectional_to_PCUIC in X0; eauto with pcuic.
+    assert (cum_c := X0).
+    eapply princc, cumul_Ind_Ind_inv in cum_c as ((?&?)&?); eauto.
     change (eq_inductive x ind) with (eqb x ind) in i.
     apply eqb_eq in i as ->.
     destruct check_eq_true eqn:eq.
     2: { rewrite eq_inductive_refl in eq; discriminate. }
     clear eq.
+    assert (isdecl' := isdecl).
     destruct isdecl as (look_mind&look_oib).
     red in look_mind.
     unfold lookup_ind_decl.
@@ -1956,99 +2423,270 @@ Proof.
     program_rewrite look_oib.
     simpl_infer.
     destruct check_eq_true eqn:eq'.
-    2: { rewrite H0 in eq'; discriminate eq'. }
+    2: { rewrite H in eq'; discriminate eq'. }
     subst npar.
     destruct check_eq_true eqn:eq'' in |- *.
     2: { rewrite Nat.eqb_refl in eq''; discriminate eq''. }
-    destruct infer eqn:inf.
-    2: { depelim X1.
-         apply BDToPCUIC.Bidirectional_to_PCUIC in i0; auto.
-         unfold BDToPCUIC.Psort in i0.
-         specialize (H4 (sq wfΣ0) (sq onud) G isg (sq wfΓ0) T' (sq (s; i0))).
-         unfold infer_cumul in H4.
-         rewrite inf in H4.
-         forward H4 by reflexivity.
-         contradiction H4. }
-    eapply build_case_predicate_type_spec in H3.
-    admit.
+    assert (ptyty: isType Σ Γ pty).
+    { eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
+      eapply validity; eauto. }
+    specialize (H4 (sq w) onud G isg wfΓ pty (sq ptyty) ltac:(reflexivity)) as IH.
+    unfold infer_cumul in IH.
+    destruct infer; [|contradiction IH].
+    destruct a3 as (P&[typp]).
+    simpl_infer.
+    cbn -[convert_leq] in IH.
+    destruct convert_leq; [|contradiction IH].
+    unfold reduce_to_arity_check.
+    destruct reduce_to_arity eqn:red_ar.
+    2: { cbn.
+         clear red_ar.
+         unshelve eapply build_case_predicate_type_spec in H3.
+         2: eapply PCUICWeakeningEnv.on_declared_inductive; eauto.
+         destruct H3 as (?&?&->).
+         cbn in a3.
+         destruct a3 as [cum].
+         contradiction n.
+         eapply invert_cumul_arity_r; eauto.
+         apply isArity_it_mkProd_or_LetIn; auto. }
+    cbn.
+    destruct check_eq_true eqn:check_sort in |- *.
+    2: { clear red_ar.
+         assert (exists ctx', pty = it_mkProd_or_LetIn ctx' (tSort ps)) as (?&->).
+         { unshelve eapply build_case_predicate_type_spec in H3.
+           2: eapply PCUICWeakeningEnv.on_declared_inductive; eauto.
+           destruct H3 as (?&?&->).
+           eexists (vass _ _  :: _).
+           reflexivity. }
+         destruct a3 as [cum].
+         eapply cumul_trans in cum; auto.
+         forward cum.
+         { eapply conv_cumul.
+           eapply PCUICCanonicity.conv_it_mkProd_or_LetIn_smash. }
+         destruct c0 as [c_ctx c_univ [c_red]]; cbn in *.
+         eapply cumul_red_l_inv in cum; [| |eassumption]; auto.
+         rewrite mkNormalArity_it_mkProd_or_LetIn in cum.
+         apply it_mkProd_or_LetIn_ass_inv in cum as (?&?); auto; cycle 1.
+         - clear.
+           induction c_ctx as [|(?&?) ? IH] using MCList.rev_ind; cbn.
+           + constructor.
+           + rewrite rev_map_app; constructor; auto.
+         - apply PCUICContexts.smash_context_assumption_context.
+           constructor.
+         - destruct onud.
+           assert (wfext: wf_ext Σ) by eauto with pcuic.
+           clear -l check_sort H5 wfext.
+           depelim l.
+           assert (leq := l).
+           apply leq_universe_props in l; eauto.
+           2: todo "incomplete, typing wrong?".
+           destruct (ind_kelim idecl), c_univ, ps.
+           all: cbn in *.
+           all: try easy.
+           + destruct UnivExprSet.for_all; discriminate.
+           + destruct UnivExprSet.for_all; discriminate.
+           + destruct UnivExprSet.for_all; discriminate.
+           + todo "small".
+           + todo "small". }
+    
+    todo "tCase".
   - simpl_infer.
     destruct p as ((?&?)&?).
-    repeat red in H0.
-    destruct H0 as ((look_mind&look_oib)&look_proj&pars).
-    unfold BDTyping.declared_minductive in *.
+    assert (isproj := H).
+    destruct H as ((look_mind&look_oib)&look_proj&pars).
+    red in look_mind.
     unfold lookup_ind_decl.
-    cbn in *.
     program_rewrite look_mind.
     program_rewrite look_oib.
     cbn.
     program_rewrite look_proj.
     tac.
+    cbn in *.
     subst n.
-    clear PΣ X.
-    destruct H1 as [H1].
-    apply BDToPCUIC.Bidirectional_to_PCUIC in X0; auto.
-    apply H1 in X0.
-    pose proof wfΣ0 as [].
-    apply cumul_Ind_Ind_inv in X0 as ((?&?)&?).
-    change (is_true (eqb x i)) in i0.
-    apply eqb_eq in i0 as ->.
+    clear X.
+    destruct wfΣ0.
+    destruct H0 as [princc], s as [typc].
+    apply BDMinimalToPCUIC.bidirectional_to_PCUIC, princc in X0; eauto with pcuic.
+    apply cumul_Ind_Ind_inv in X0 as ((ix&_)&conv_inf_deriv_args).
+    change (is_true (eqb x i)) in ix.
+    apply eqb_eq in ix as ->.
     destruct check_eq_true eqn:eq2.
     2: { rewrite eq_inductive_refl in eq2; discriminate. }
     destruct check_eq_true eqn:eq3 in |- *.
     2: { rewrite Nat.eqb_refl in eq3; discriminate. }
     destruct check_eq_true eqn:eq4 in |- *.
-    2: { apply All2_length in a. rewrite a H2 Nat.eqb_refl in eq4. discriminate. }
+    2: { apply All2_length in conv_inf_deriv_args.
+         rewrite conv_inf_deriv_args H1 Nat.eqb_refl in eq4.
+         discriminate. }
     constructor.
-    intros T ?.
-    apply inversion_Proj in X0 as (?&?&?&?&?&?&?&?&?); auto.
+    intros T typ.
+    apply inversion_Proj in typ as (larger_inst&?&?&?&larger_args&isproj'&typc'&?&cum); auto.
     cbn in *.
+    destruct (PCUICWeakeningEnv.declared_projection_inj isproj isproj') as (<-&<-&<-).
+    red in isproj.
+    assert (H := typc').
+    apply princc, cumul_Ind_Ind_inv in H as ((_&larger_R)&conv_larger).
+    set (proj := (i, ind_npars x, n0)).
+    set (small_proj_ctx := projection_context x x2 proj.1.1 x0).
+    set (large_proj_ctx := projection_context x x2 proj.1.1 larger_inst).
+    assert (consistent_instance_ext Σ (ind_universes x) x0).
+    { clear -w typc isproj.
+      destruct isproj.
+      apply validity_term in typc as (s&typ); auto.
+      eapply invert_type_mkApps_ind in typ as (?&?); eauto. }
+    assert (consistent_instance_ext Σ (ind_universes x) larger_inst).
+    { clear -w typc' isproj.
+      destruct isproj.
+      apply validity_term in typc' as (s&typ); auto.
+      eapply invert_type_mkApps_ind in typ as (?&?); eauto. }
+
     etransitivity; [|eassumption].
-    admit.
+    eapply (subst_cumul _ small_proj_ctx large_proj_ctx []); auto.
+    + eapply projection_subslet with (p := proj); eauto.
+      cbn.
+      eapply validity_term; eauto.
+    + eapply projection_subslet with (p := proj); eauto.
+      cbn.
+      eapply validity_term; eauto.
+    + constructor; auto.
+      apply All2_rev; auto.
+    + eapply weaken_wf_local; auto.
+      eapply PCUICWeakening.weaken_wf_local; eauto with pcuic.
+      eapply wf_projection_context with (p := proj); eauto.
+    + eapply weaken_cumul with (Δ := Γ); auto.
+      4: { apply PCUICInductiveInversion.projection_cumulative_indices; eauto.
+           - eapply PCUICWeakeningEnv.weaken_lookup_on_global_env' in look_mind; auto.
+           - clear eq4.
+             apply Nat.eqb_eq in a1.
+             rewrite <- a1; auto. }
+      eapply PCUICClosed.closed_wf_local; eauto.
+      * eapply wf_projection_context with (p := proj); eauto with pcuic.
+      * cbn.
+        autorewrite with len.
+        cbn.
+        eapply PCUICWeakeningEnv.on_declared_projection in isproj; eauto.
+        rewrite isproj.(onNpars).
+        rewrite PCUICClosed.closedn_subst_instance_constr.
+        eapply PCUICClosed.declared_projection_closed; eauto.
+      * cbn.
+        autorewrite with len.
+        cbn.
+        eapply PCUICWeakeningEnv.on_declared_projection in isproj; eauto.
+        rewrite isproj.(onNpars).
+        rewrite PCUICClosed.closedn_subst_instance_constr.
+        eapply PCUICClosed.declared_projection_closed; eauto.
   - simpl_infer.
-    program_rewrite H1.
-    admit.
-  - simpl_infer.
-    program_rewrite H1.
-    admit.
-  - unfold infer_type.
-    cbn.
-    tac.
-    apply BDToPCUIC.Bidirectional_to_PCUIC in X; auto.
-    destruct H0 as [H0], wfΣ0.
-    apply H0 in X.
-    eapply cumul_trans in X; eauto.
-    forward X by (eapply red_cumul; eauto).
-    eapply cumul_alt in X as (?&?&(r1&r2)&?).
-    eapply invert_red_sort in r2 as ->.
-    inversion l; subst; clear l.
-    destruct reduce_to_sort as [(?&[?])|] eqn:r; cbn.
-    + constructor; intros ? ?.
-      apply H0 in X.
-      eapply red_confluence in r1 as (?&?&?); eauto.
-      apply invert_red_sort in r1 as ->.
-      apply invert_red_sort in r2 as [= ->].
-      eapply cumul_red_l_inv; eauto.
-    + eauto using reduce_to_sort_complete.
-  - unfold infer_applicable.
-    specialize (H0 wfΣ0 onud G isg wfΓ0).
-    destruct (infer wfΣ0 onud G isg Γ wfΓ0 t) eqn:inf in H0 |-; [|easy].
-    program_rewrite inf.
-    destruct a; subst.
-    match goal with
-    | |- context[reduce_to_prod ?a ?b ?c ?d] =>
-      destruct (reduce_to_prod a b c d) eqn:rprod in |-
-    end.
-    2: { exfalso.
-         eauto using reduce_to_prod_complete. }
-    program_rewrite rprod.
-    destruct a as (na'&a'&b'&[r']).
+    program_rewrite H0.
+    destruct check_fix_types eqn:types.
+    2: { eauto using check_fix_types_complete. }
+    destruct check_fix_bodies eqn:bodies.
+    2: { eapply check_fix_bodies_complete; [|eauto].
+         eapply (All_impl X0).
+         cbn.
+         intros ? (?&?&?); auto. }
+    destruct check_eq_true eqn:alllam.
+    2: { assert (forallb (fun d => isLambda (dbody d)) mfix = true).
+         - apply forallb_Forall, All_Forall.
+           apply (All_impl X0).
+           intros ? (?&?&?); auto.
+         - rewrite H2 in alllam; discriminate. }
+    destruct check_eq_true eqn:guard in |- *.
+    2: { rewrite H in guard; discriminate. }
+    destruct check_eq_true eqn:wffix in |- *.
+    2: { rewrite H1 in wffix; discriminate. }
     destruct wfΣ0.
-    eapply red_confluence in X0 as (?&r1&r2); eauto.
-    eapply whnf_red_inv in r1; eauto.
-    eapply whnf_red_inv in r2; eauto.
-    inversion r1; subst.
-    inversion r2; subst.
-    inv r2.
-    depelim r1.
-    depelim r2.
-    eapply invert_red_prod in r1 as ?.
+    constructor.
+    intros T typ.
+    apply inversion_Fix in typ as (?&?&?&?&?&?&?); auto.
+    congruence.
+  - simpl_infer.
+    program_rewrite H0.
+    destruct check_fix_types eqn:types.
+    2: { eauto using check_fix_types_complete. }
+    destruct check_fix_bodies eqn:bodies.
+    2: { eauto using check_fix_bodies_complete. }
+    destruct check_eq_true eqn:guard.
+    2: { rewrite H in guard; discriminate. }
+    destruct check_eq_true eqn:wffix in |- *.
+    2: { rewrite H1 in wffix; discriminate. }
+    destruct wfΣ0.
+    constructor.
+    intros T typ.
+    apply inversion_CoFix in typ as (?&?&?&?&?&?&?); auto.
+    congruence.
+  - unfold infer_type.
+    tac.
+    destruct wfΣ0.
+    destruct s as [typ].
+    destruct H as [princx].
+    apply BDMinimalToPCUIC.bidirectional_to_PCUIC, princx in X; eauto with pcuic.
+    eapply cumul_red_r_inv in X; eauto.
+    eapply invert_cumul_sort_r in X as (?&rsort&?).
+    match goal with
+    | |- context[reduce_to_sort ?a ?b ?c ?d] => program_destruct (reduce_to_sort a b c d)
+    end.
+    2: { eauto using reduce_to_sort_complete. }
+    destruct a as (u'&[rsort']).
+    constructor.
+    intros T' typ'.
+    apply princx in typ'.
+    cbn in rsort'.
+    eapply red_confluence in rsort as (?&(r1&r2)); eauto.
+    apply invert_red_sort in r1 as ->.
+    apply invert_red_sort in r2 as [= <-].
+    cbn.
+    etransitivity; eauto.
+    eapply red_cumul_inv; auto.
+  - unfold infer_applicable.
+    specialize_IHs.
+    program_destruct (infer wfΣ0 onud G isg Γ wfΓ t);
+      rewrite <- peq in H; auto.
+    destruct a as (T'&[typ']).
+    destruct H as [princT'].
+    match goal with
+    | |- context[reduce_to_prod ?a ?b ?c ?d] => program_destruct (reduce_to_prod a b c d)
+    end.
+    2: { apply BDMinimalToPCUIC.bidirectional_to_PCUIC, princT' in X; eauto with pcuic.
+         destruct wfΣ0.
+         eapply cumul_red_r_inv in X; eauto.
+         eapply invert_cumul_prod_r in X as (?&?&?&((rprod&?)&?)&?); auto.
+         eauto using reduce_to_prod_complete. }
+    destruct a as (na'&a&b&[rprod]).
+    destruct wfΣ0.
+    constructor.
+    intros T'' typ''.
+    apply princT' in typ''.
+    etransitivity; eauto.
+    eapply red_cumul_inv; auto.
+  - unfold infer_constructor.
+    specialize_IHs.
+    program_destruct (infer wfΣ0 onud G isg Γ wfΓ t);
+      rewrite <- peq in H; auto.
+    destruct a as (T'&[typ']).
+    destruct H as [princT'].
+    match goal with
+    | |- context[reduce_to_ind ?a ?b ?c ?d] => program_destruct (reduce_to_ind a b c d)
+    end.
+    2: { apply BDMinimalToPCUIC.bidirectional_to_PCUIC, princT' in X; eauto with pcuic.
+         destruct wfΣ0.
+         eapply cumul_red_r_inv in X; eauto.
+         eapply invert_cumul_ind_r in X as (?&?&r&?&?); auto.
+         eauto using reduce_to_ind_complete. }
+    destruct a as (i&u&indargs&[rind]).
+    destruct wfΣ0.
+    constructor.
+    intros T'' typ''.
+    apply princT' in typ''.
+    etransitivity; eauto.
+    eapply red_cumul_inv; auto.
+  - unfold infer_cumul.
+    tac.
+    cbn in *.
+    destruct s, H as [princx].
+    apply BDMinimalToPCUIC.bidirectional_to_PCUIC, princx in X; eauto with pcuic.
+    destruct convert_leq eqn:conv; [now auto|].
+    destruct wfΣ0.
+    apply convert_leq_complete in conv; eauto.
+    transitivity T; auto.
+    transitivity T'; auto.
+Qed.

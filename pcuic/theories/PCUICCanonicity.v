@@ -221,29 +221,49 @@ Section Spines.
       rewrite (context_assumptions_context assl) in IHΓ .
       now simpl in IHΓ.
   Qed.
-
-  Lemma cumul_it_mkProd_or_LetIn_smash Γ Δ T : 
-    Σ ;;; Γ |- it_mkProd_or_LetIn (smash_context [] Δ) (expand_lets Δ T) <= it_mkProd_or_LetIn Δ T.
+  
+  (* TODO: Where to put this? *)
+  Lemma red_it_mkProd_or_LetIn_smash Γ Δ t :
+    red Σ Γ
+        (it_mkProd_or_LetIn Δ t)
+        (it_mkProd_or_LetIn (smash_context [] Δ) (expand_lets Δ t)).
   Proof.
-    induction Δ in Γ, T |- * using ctx_length_rev_ind; simpl; auto.
+    induction Δ in Γ, t |- * using ctx_length_rev_ind; cbn.
     - now rewrite expand_lets_nil.
-    - rewrite smash_context_app_expand /=.
-      destruct d as [na [b|] ty].
-      * rewrite expand_lets_vdef {1}it_mkProd_or_LetIn_app /= subst_context_nil app_context_nil_l.
-        rewrite expand_lets_smash_context /= expand_lets_k_ctx_nil.
-        rewrite /expand_lets_ctx /expand_lets_k_ctx /= subst_empty lift0_id lift0_context.
-        rewrite /mkProd_or_LetIn /=.
-        econstructor 3; [|constructor].
-        rewrite /subst1 subst_it_mkProd_or_LetIn Nat.add_0_r.
-        now eapply X; len.
-      * rewrite expand_lets_vass it_mkProd_or_LetIn_app /=.
-        rewrite it_mkProd_or_LetIn_app /=.
-        eapply congr_cumul_prod; eauto. simpl.
-        rewrite expand_lets_smash_context /= expand_lets_k_ctx_nil.
-        rewrite expand_lets_assumption_context. repeat constructor.
-        now eapply X.
+    - change (Γ0 ++ [d]) with ([d],,, Γ0).
+      rewrite smash_context_app_expand.
+      destruct d as [na [b|] ty]; cbn.
+      + unfold app_context.
+        rewrite expand_lets_vdef it_mkProd_or_LetIn_app app_nil_r.
+        cbn.
+        rewrite lift0_context lift0_id subst_empty.
+        rewrite subst_context_smash_context.
+        cbn.
+        etransitivity.
+        { apply red1_red.
+          apply red_zeta. }
+        unfold subst1.
+        rewrite subst_it_mkProd_or_LetIn.
+        rewrite Nat.add_0_r.
+        apply X.
+        now rewrite subst_context_length.
+      + unfold app_context.
+        rewrite expand_lets_vass !it_mkProd_or_LetIn_app.
+        cbn.
+        apply red_prod_r.
+        rewrite subst_context_lift_id; auto.
+        rewrite lift0_context.
+        now apply X.
   Qed.
-    
+  
+  Lemma conv_it_mkProd_or_LetIn_smash Γ Δ T :
+    Σ ;;; Γ |- it_mkProd_or_LetIn Δ T = it_mkProd_or_LetIn (smash_context [] Δ) (expand_lets Δ T).
+  Proof.
+    eapply red_conv_conv.
+    - apply red_it_mkProd_or_LetIn_smash.
+    - reflexivity.
+  Qed.
+
   Lemma typing_spine_smash Γ Δ T args T' : 
     typing_spine Σ Γ (it_mkProd_or_LetIn Δ T) args T' ->
     typing_spine Σ Γ (it_mkProd_or_LetIn (smash_context [] Δ) (expand_lets Δ T)) args T'.
@@ -268,7 +288,9 @@ Section Spines.
       rewrite expand_lets_vass.
       eapply typing_spine_strengthen; eauto.
       eapply congr_cumul_prod; eauto.
-      eapply cumul_it_mkProd_or_LetIn_smash. 
+      eapply conv_cumul.
+      symmetry.
+      eapply conv_it_mkProd_or_LetIn_smash. 
   Qed.
   
   Lemma typing_spine_nth_error Γ Δ T args T' n arg decl : 

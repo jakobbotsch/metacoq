@@ -323,10 +323,10 @@ Section Typecheck.
     | tCase (ind, par) p c brs =>
       cty <- infer Γ HΓ c ;;
       I <- reduce_to_ind HΣ Γ cty.π1 _ ;;
-      let '(ind'; I') := I in let '(u; I'') := I' in let '(args; H) := I'' in
+      let '(ind'; I') := I in let '(scrut_inst; I'') := I' in let '(args; H) := I'' in
       check_eq_true (eqb ind ind')
                     (* bad case info *)
-                    (NotConvertible G Γ (tInd ind u) (tInd ind' u)) ;;
+                    (NotConvertible G Γ (tInd ind scrut_inst) (tInd ind' scrut_inst)) ;;
       d <- lookup_ind_decl ind' ;;
       let '(decl; d') := d in let '(body; HH) := d' in
       check_coind <- check_eq_true (negb (isCoFinite (ind_finite decl)))
@@ -334,8 +334,10 @@ Section Typecheck.
       check_eq_true (ind_npars decl =? par)
                     (Msg "not the right number of parameters") ;;
       IS <- infer_scheme infer Γ HΓ p ;;
-      let '(pctx; IS') := IS in let '(ps; typ_p) := IS' in
+      let '(pred_ctx; IS') := IS in let '(ps; typ_p) := IS' in
       check_is_allowed_elimination ps (ind_kelim body);;
+      let pred_ctx := arity_ass_context pctx in
+      check_cumul_ctx build_case_
       let pty := mkAssumArity pctx ps in
       let params := firstn par args in
       match build_case_predicate_type ind decl body params u ps with

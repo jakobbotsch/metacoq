@@ -139,123 +139,488 @@ Section Typecheck.
       sq.
       eapply type_reduction; eauto.
     Qed.
-  End InferAux.
 
-  Program Definition lookup_ind_decl ind
-    : typing_result
-        ({decl & {body & declared_inductive (fst Σ) decl ind body}}) :=
-    match lookup_env (fst Σ) ind.(inductive_mind) with
-    | Some (InductiveDecl decl) =>
-      match nth_error decl.(ind_bodies) ind.(inductive_ind) with
-      | Some body => ret (decl; body; _)
-      | None => raise (UndeclaredInductive ind)
-      end
-    | _ => raise (UndeclaredInductive ind)
-    end.
-  Next Obligation.
-    split.
-    - symmetry in Heq_anonymous0.
-      etransitivity. eassumption. reflexivity.
-    - now symmetry.
-  Defined.
+    Program Definition lookup_ind_decl ind
+      : typing_result
+          ({decl & {body & declared_inductive (fst Σ) decl ind body}}) :=
+      match lookup_env (fst Σ) ind.(inductive_mind) with
+      | Some (InductiveDecl decl) =>
+        match nth_error decl.(ind_bodies) ind.(inductive_ind) with
+        | Some body => ret (decl; body; _)
+        | None => raise (UndeclaredInductive ind)
+        end
+      | _ => raise (UndeclaredInductive ind)
+      end.
+    Next Obligation.
+      split.
+      - symmetry in Heq_anonymous0.
+        etransitivity. eassumption. reflexivity.
+      - now symmetry.
+    Defined.
 
-  Program Definition check_consistent_instance uctx u
-    : typing_result (consistent_instance_ext Σ uctx u)
-    := match uctx with
-       | Monomorphic_ctx _ =>
-         check_eq_nat #|u| 0 (Msg "monomorphic instance should be of length 0")
-       | Polymorphic_ctx (inst, cstrs) =>
-         let '(inst, cstrs) := AUContext.repr (inst, cstrs) in
-         check_eq_true (forallb (fun l => LevelSet.mem l (uGraph.wGraph.V G)) u)
-                       (Msg "undeclared level in instance") ;;
-         X <- check_eq_nat #|u| #|inst|
-                          (Msg "instance does not have the right length");;
+    Program Definition check_consistent_instance uctx u
+      : typing_result (consistent_instance_ext Σ uctx u)
+      := match uctx with
+         | Monomorphic_ctx _ =>
+           check_eq_nat #|u| 0 (Msg "monomorphic instance should be of length 0")
+         | Polymorphic_ctx (inst, cstrs) =>
+           let '(inst, cstrs) := AUContext.repr (inst, cstrs) in
+           check_eq_true (forallb (fun l => LevelSet.mem l (uGraph.wGraph.V G)) u)
+                         (Msg "undeclared level in instance") ;;
+           X <- check_eq_nat #|u| #|inst|
+         (Msg "instance does not have the right length");;
          match check_constraints G (subst_instance_cstrs u cstrs) with
          | true => ret (conj _ _)
          | false => raise (Msg "ctrs not satisfiable")
          end
-         (* #|u| = #|inst| /\ valid_constraints φ (subst_instance_cstrs u cstrs) *)
-       end.
-  Next Obligation.
-    eapply forallb_All in H. eapply All_forallb'; tea.
-    clear -cf HG. intros x; simpl. now apply is_graph_of_uctx_levels.
-  Qed.
-  Next Obligation.
-    repeat split.
-    - now rewrite mapi_length in X.
-    - eapply check_constraints_spec; eauto.
-  Qed.
+           (* #|u| = #|inst| /\ valid_constraints φ (subst_instance_cstrs u cstrs) *)
+         end.
+    Next Obligation.
+      eapply forallb_All in H. eapply All_forallb'; tea.
+      clear -cf HG. intros x; simpl. now apply is_graph_of_uctx_levels.
+    Qed.
+    Next Obligation.
+      repeat split.
+      - now rewrite mapi_length in X.
+      - eapply check_constraints_spec; eauto.
+    Qed.
 
-  Obligation Tactic := Program.Tactics.program_simplify ; eauto 2.
+    Obligation Tactic := Program.Tactics.program_simplify ; eauto 2.
+    
+    Program Definition check_is_allowed_elimination (u : Universe.t) (al : allowed_eliminations) :
+      typing_result (is_allowed_elimination Σ u al) :=
+      let o :=
+          match al return option (is_allowed_elimination Σ u al) with
+          | IntoSProp =>
+            match Universe.is_sprop u with
+            | true => Some _
+            | false => None
+            end
+          | IntoPropSProp =>
+            match is_propositional u with
+            | true => Some _
+            | false => None
+            end
+          | IntoSetPropSProp =>
+            match is_propositional u || check_eqb_universe G u Universe.type0 with
+            | true => Some _
+            | false => None
+            end
+          | IntoAny => Some _
+          end in
+      match o with
+      | Some t => Checked t
+      | None => TypeError (Msg "Cannot eliminate over this sort")
+      end.
+    Next Obligation.
+      unfold is_allowed_elimination, is_allowed_elimination0.
+      destruct check_univs; auto.
+      intros val sat.
+      symmetry in Heq_anonymous.
+      apply is_sprop_val with (v := val) in Heq_anonymous.
+      now rewrite Heq_anonymous.
+    Qed.
+    Next Obligation.
+      unfold is_allowed_elimination, is_allowed_elimination0.
+      destruct check_univs; auto.
+      intros val sat.
+      unfold is_propositional in *.
+      destruct Universe.is_prop eqn:prop.
+      - apply is_prop_val with (v := val) in prop; rewrite prop; auto.
+      - destruct Universe.is_sprop eqn:sprop.
+        + apply is_sprop_val with (v := val) in sprop; rewrite sprop; auto.
+        + discriminate.
+    Qed.
+    Next Obligation.
+      unfold is_allowed_elimination, is_allowed_elimination0.
+      destruct check_univs eqn:cu; auto.
+      intros val sat.
+      unfold is_propositional in *.
+      destruct Universe.is_prop eqn:prop.
+      - apply is_prop_val with (v := val) in prop; rewrite prop; auto.
+      - destruct Universe.is_sprop eqn:sprop.
+        + apply is_sprop_val with (v := val) in sprop; rewrite sprop; auto.
+        + destruct check_eqb_universe eqn:check; [|discriminate].
+          eapply check_eqb_universe_spec' in check; eauto.
+          * unfold eq_universe, eq_universe0 in check.
+            rewrite cu in check.
+            specialize (check val sat).
+            now rewrite check.
+          * destruct HΣ, Hφ.
+            now apply wf_ext_global_uctx_invariants.
+          * destruct HΣ, Hφ.
+            now apply global_ext_uctx_consistent.
+    Qed.
+    Next Obligation.
+      unfold is_allowed_elimination, is_allowed_elimination0.
+      destruct check_univs; auto.
+    Qed.
+    
+    Equations? (noeqns) infer_constructor (Γ : context) (HΓ : ∥wf_local Σ Γ∥) (c : term)
+      : typing_result (∑ ind u args, ∥ Σ;;; Γ |- c : mkApps (tInd ind u) args ∥) :=
+      infer_constructor Γ HΓ c with infer Γ HΓ c := {
+        | TypeError te => TypeError te;
+        | Checked (cty; c_typ) with reduce_to_ind HΣ Γ cty _ := {
+          | TypeError te => TypeError te;
+          | Checked (ind; u; args; typ) => Checked (ind; u; args; _)
+          }
+        }.
+    Proof.
+      - eapply validity_wf; eauto.
+      - sq.
+        eapply type_reduction; eauto.
+    Qed.
+    
+  Definition wt_decl (Σ : global_env_ext) Γ d :=
+    match d with
+    | {| decl_body := Some b; decl_type := ty |} => 
+      welltyped Σ Γ ty /\ welltyped Σ Γ b
+    | {| decl_body := None; decl_type := ty |} =>
+      welltyped Σ Γ ty
+    end.
   
-  Program Definition check_is_allowed_elimination (u : Universe.t) (al : allowed_eliminations) :
-    typing_result (is_allowed_elimination Σ u al) :=
-    let o :=
-    match al return option (is_allowed_elimination Σ u al) with
-    | IntoSProp =>
-      match Universe.is_sprop u with
-      | true => Some _
-      | false => None
-      end
-    | IntoPropSProp =>
-      match is_propositional u with
-      | true => Some _
-      | false => None
-      end
-    | IntoSetPropSProp =>
-      match is_propositional u || check_eqb_universe G u Universe.type0 with
-      | true => Some _
-      | false => None
-      end
-    | IntoAny => Some _
-    end in
-    match o with
-    | Some t => Checked t
-    | None => TypeError (Msg "Cannot eliminate over this sort")
+  Definition wf_env_conv (Γ : context) (t u : term) :
+    welltyped Σ Γ t -> welltyped Σ Γ u -> typing_result (∥ Σ;;; Γ |- t = u ∥) :=
+    @convert Γ t u.
+
+  Definition wf_env_cumul (Γ : context) (t u : term) :
+    welltyped Σ Γ t -> welltyped Σ Γ u -> typing_result (∥ Σ;;; Γ |- t <= u ∥) :=
+    @convert_leq Γ t u.
+
+   Program Definition check_cumul_decl Γ d d' : wt_decl Σ Γ d -> wt_decl Σ Γ d' -> typing_result (∥ cumul_decls Σ Γ Γ d d' ∥) := 
+    match d, d' return wt_decl Σ Γ d -> wt_decl Σ Γ d' -> typing_result _ with
+    | {| decl_name := na; decl_body := Some b; decl_type := ty |},
+      {| decl_name := na'; decl_body := Some b'; decl_type := ty' |} => 
+      fun wtd wtd' =>
+      eqna <- check_eq_true (eqb_binder_annot na na') (Msg "Binder annotations do not match") ;;
+      cumb <- convert Γ b b' _ _ ;;
+      cumt <- convert_leq Γ ty ty' _ _ ;;
+      ret (let 'sq cumb := cumb in 
+            let 'sq cumt := cumt in
+            sq _)
+    | {| decl_name := na; decl_body := None; decl_type := ty |},
+      {| decl_name := na'; decl_body := None; decl_type := ty' |} => 
+      fun wtd wtd' =>
+      eqna <- check_eq_true (eqb_binder_annot na na') (Msg "Binder annotations do not match") ;;
+      cumt <- convert_leq Γ ty ty' wtd wtd';;
+      ret (let 'sq cumt := cumt in sq _)      
+    | _, _ =>
+      fun wtd wtd' => raise (Msg "While checking cumulativity of contexts: declarations do not match")
     end.
   Next Obligation.
-    unfold is_allowed_elimination, is_allowed_elimination0.
-    destruct check_univs; auto.
-    intros val sat.
-    symmetry in Heq_anonymous.
-    apply is_sprop_val with (v := val) in Heq_anonymous.
-    now rewrite Heq_anonymous.
+    constructor; pcuics. now apply eqb_binder_annot_spec.
   Qed.
   Next Obligation.
-    unfold is_allowed_elimination, is_allowed_elimination0.
-    destruct check_univs; auto.
-    intros val sat.
-    unfold is_propositional in *.
-    destruct Universe.is_prop eqn:prop.
-    - apply is_prop_val with (v := val) in prop; rewrite prop; auto.
-    - destruct Universe.is_sprop eqn:sprop.
-      + apply is_sprop_val with (v := val) in sprop; rewrite sprop; auto.
-      + discriminate.
+    constructor; pcuics. now apply eqb_binder_annot_spec.
   Qed.
-  Next Obligation.
-    unfold is_allowed_elimination, is_allowed_elimination0.
-    destruct check_univs eqn:cu; auto.
-    intros val sat.
-    unfold is_propositional in *.
-    destruct Universe.is_prop eqn:prop.
-    - apply is_prop_val with (v := val) in prop; rewrite prop; auto.
-    - destruct Universe.is_sprop eqn:sprop.
-      + apply is_sprop_val with (v := val) in sprop; rewrite sprop; auto.
-      + destruct check_eqb_universe eqn:check; [|discriminate].
-        eapply check_eqb_universe_spec' in check; eauto.
-        * unfold eq_universe, eq_universe0 in check.
-          rewrite cu in check.
-          specialize (check val sat).
-          now rewrite check.
-        * destruct HΣ, Hφ.
-          now apply wf_ext_global_uctx_invariants.
-        * destruct HΣ, Hφ.
-          now apply global_ext_uctx_consistent.
+  
+  Lemma cumul_ctx_rel_cons {Γ Δ Δ' d d'} (c : cumul_ctx_rel Σ Γ Δ Δ') (p : cumul_decls Σ (Γ,,, Δ) (Γ ,,, Δ') d d') : 
+    cumul_ctx_rel Σ Γ (Δ ,, d) (Δ' ,, d').
+  Proof.
+    destruct d as [na [b|] ty], d' as [na' [b'|] ty']; try constructor; auto.
+    depelim p. depelim p.
   Qed.
-  Next Obligation.
-    unfold is_allowed_elimination, is_allowed_elimination0.
-    destruct check_univs; auto.
+  
+  Lemma cumul_ctx_rel_close Γ Δ Δ' : 
+    cumul_ctx_rel Σ Γ Δ Δ' ->
+    cumul_context Σ (Γ ,,, Δ) (Γ ,,, Δ').
+  Proof.
+    induction 1; pcuic.
   Qed.
+  
+  Lemma cumul_decls_irrel_sec  Γ Γ' d d' :
+    cumul_decls Σ Γ Γ d d' ->
+    cumul_decls Σ Γ Γ' d d'.
+  Proof.
+    intros cum; depelim cum; intros; constructor; auto.
+  Qed.
+  
+  Lemma inv_wf_local Γ d :
+    wf_local Σ (Γ ,, d) ->
+    wf_local Σ Γ * wt_decl Σ Γ d.
+  Proof.
+    intros wfd; depelim wfd; split; simpl; pcuic.
+    now exists t.
+  Qed.
+  
+  Lemma context_cumulativity_welltyped Γ Γ' t : 
+    welltyped Σ Γ t ->
+    cumul_context Σ Γ' Γ ->
+    wf_local Σ Γ' ->
+    welltyped Σ Γ' t.
+  Proof.
+    destruct HΣ.
+    intros [s Hs] cum wfΓ'; exists s; eapply context_cumulativity; pcuics.
+  Qed.
+
+  Lemma context_cumulativity_wt_decl Γ Γ' d :
+    wt_decl Σ Γ d ->
+    cumul_context Σ Γ' Γ ->
+    wf_local Σ Γ' ->
+    wt_decl Σ Γ' d.
+  Proof.
+    destruct HΣ.
+    destruct d as [na [b|] ty]; simpl;
+    intuition pcuics; eapply context_cumulativity_welltyped; pcuics.
+  Qed.
+ 
+  Program Fixpoint check_cumul_ctx Γ Δ Δ' 
+    (wfΔ : ∥ wf_local Σ (Γ ,,, Δ) ∥) (wfΔ' : ∥ wf_local Σ (Γ ,,, Δ') ∥) : 
+    typing_result (∥ cumul_ctx_rel Σ Γ Δ Δ' ∥) :=
+    match Δ, Δ' with
+    | [], [] => ret (sq (ctx_rel_nil _))
+    | decl :: Δ, decl' :: Δ' => 
+      cctx <- check_cumul_ctx Γ Δ Δ' _ _ ;;
+      cdecl <- check_cumul_decl (Γ ,,, Δ) decl decl' _ _ ;;
+      ret _
+    | _, _ => raise (Msg "While checking cumulativity of contexts: contexts have not the same length")
+    end.
+    Next Obligation.
+      sq; now depelim wfΔ.
+    Qed.
+    Next Obligation.
+      sq; now depelim wfΔ'.
+    Qed.
+    Next Obligation.
+      sq.
+      depelim wfΔ; simpl.
+      destruct l; eexists; eauto.
+      destruct l; split; eexists; eauto.
+    Qed.
+    Next Obligation.
+      destruct wfΔ as [wfΔ], wfΔ' as [wfΔ'], cctx.
+      assert(cumul_context Σ (Γ ,,, Δ) (Γ ,,, Δ')).
+      now apply cumul_ctx_rel_close.
+      simpl in *. eapply inv_wf_local in wfΔ as [wfΔ wfd].
+      eapply inv_wf_local in wfΔ' as [wfΔ' wfd'].
+      eapply context_cumulativity_wt_decl. 3:eassumption. all:pcuics.
+    Qed.
+    Next Obligation.
+      sq; simpl in *.
+      eapply inv_wf_local in wfΔ as [wfΔ wfd].
+      eapply inv_wf_local in wfΔ' as [wfΔ' wfd'].
+      apply cumul_ctx_rel_cons. auto.
+      eapply cumul_decls_irrel_sec; pcuics.
+    Qed.
+    Next Obligation.
+      split. intros. intros []. congruence. intros []; congruence.
+    Qed.
+    Next Obligation.
+      split. intros. intros []. congruence. intros []; congruence.
+    Qed.
+
+    Lemma isArity_instantiate_params_subst params pars s ty res :
+      isArity ty ->
+      instantiate_params_subst params pars s ty = Some res ->
+      isArity res.2.
+    Proof.
+      induction params in pars, s, ty, res |- *; intros isar inst; cbn in *.
+      - destruct pars; [|congruence].
+        noconf inst; auto.
+      - destruct decl_body.
+        + destruct ty; try discriminate inst.
+          cbn in *.
+          apply IHparams in inst; auto.
+        + destruct ty; try discriminate inst.
+          cbn in *.
+          destruct pars; [discriminate|].
+          apply IHparams in inst; auto.
+    Qed.
+    
+    Lemma isArity_instantiate_params ctx params ty res :
+      isArity ty ->
+      instantiate_params ctx params ty = Some res ->
+      isArity res.
+    Proof.
+      intros isAr inst.
+      unfold instantiate_params in *.
+      destruct instantiate_params_subst as [(?&?)|] eqn:inst'; [|discriminate].
+      apply isArity_instantiate_params_subst in inst'; auto.
+      noconf inst.
+      apply PCUICCanonicity.isArity_subst; auto.
+    Qed.
+    
+    Lemma isArity_destArity t :
+      isArity t <-> exists ctx u, destArity [] t = Some (ctx, u).
+    Proof.
+      induction t; cbn in *.
+      all: split; [intros; try easy|intros (?&?&[=])]; subst.
+      - auto.
+      - apply IHt2 in H as (?&?&eq).
+        rewrite destArity_app eq.
+        cbn.
+        eauto.
+      - rewrite destArity_app in H0.
+        destruct destArity as [(?&?)|] eqn:dest in H0; cbn in *; [|congruence].
+        noconf H0.
+        apply IHt2.
+        eauto.
+      - apply IHt3 in H as (?&?&eq).
+        rewrite destArity_app eq.
+        cbn.
+        eauto.
+      - rewrite destArity_app in H0.
+        destruct destArity as [(?&?)|] eqn:dest in H0; cbn in *; [|congruence].
+        noconf H0.
+        apply IHt3.
+        eauto.
+    Qed.
+    
+    Equations? build_case_predicate_context
+             (ind : inductive)
+             (mdecl : mutual_inductive_body) (idecl : one_inductive_body)
+             (isdecl : declared_inductive Σ mdecl ind idecl)
+             (params : list term)
+             (u : Instance.t)
+             (npars_eq : #|params| = ind_npars mdecl) : context :=
+      build_case_predicate_context ind mdecl idecl isdecl params u npars_eq
+        with inspect (instantiate_params (subst_instance_context u (ind_params mdecl)) params
+                                         (subst_instance_constr u (ind_type idecl))) := {
+        | exist None inst_none => False_rect _ _;
+        | exist (Some inst_params) inst_some with inspect (destArity [] inst_params) := {
+          | exist None dest_none => False_rect _ _;
+          | exist (Some (ctx, _)) _ =>
+            (ctx,, vass {| binder_name := nNamed (ind_name idecl);
+                           binder_relevance := ind_relevance idecl |}
+                        (mkApps (tInd ind u) (map (lift0 #|ctx|) params ++ to_extended_list ctx)))
+          }
+        }.
+    Proof.
+      all: destruct HΣ.
+      all: apply PCUICWeakeningEnv.on_declared_inductive in isdecl as (on_ind&on_oib); auto.
+      all: rewrite ->(ind_arity_eq on_oib) in *.
+      all: rewrite ->!subst_instance_constr_it_mkProd_or_LetIn in *.
+      - symmetry in inst_some.
+        apply isArity_instantiate_params in inst_some; auto.
+        + apply isArity_destArity in inst_some as (?&?&?); congruence.
+        + repeat apply isArity_it_mkProd_or_LetIn.
+          apply isArity_destArity.
+          rewrite (subst_instance_destArity []).
+          cbn.
+          eauto.
+      - cbn in *.
+        symmetry in inst_none.
+        match type of inst_none with
+        | ?a = ?b => enough (∑ t, a = Some t) as (?&?) by congruence
+        end.
+        apply PCUICCtxShape.instantiate_params_ok.
+        + apply context_relation_refl; intros.
+          unfold PCUICCtxShape.same_shape.
+          destruct decl_body; auto.
+        + rewrite npars_eq.
+          rewrite subst_instance_context_assumptions.
+          rewrite <- (onNpars on_ind).
+          auto.
+    Qed.
+    
+    Definition last_nonempty {X : Type} (xs : list X) : 0 < #|xs| -> X :=
+      match xs with
+      | [] => fun ne => ltac:(exfalso; inversion ne)
+      | x :: xs => fun _ => last xs x
+      end.
+    
+    Equations? infer_case
+             (Γ : context) (wfΓ : ∥ wf_local Σ Γ ∥)
+             (ind : inductive)
+             (pars : nat)
+             (p c : term)
+             (brs : list (nat × term))
+      : typing_result (∑ A, ∥ Σ ;;; Γ |- tCase (ind, pars) p c brs : A ∥) :=
+      infer_case Γ wfΓ ind pars p c brs with infer_constructor Γ wfΓ c := {
+
+       | TypeError te => TypeError te;
+       | Checked (ind'; scrut_u; args; typ_c) with inspect (eqb ind ind') := {
+
+        | exist false ind_neq =>
+          TypeError (NotConvertible G Γ (tInd ind scrut_u) (tInd ind' scrut_u));
+        | exist true ind_eq with lookup_ind_decl ind := {
+
+         | TypeError te => TypeError te;
+         | Checked (decl; body; isdecl) with inspect (isCoFinite (ind_finite decl)) := {
+
+          | exist true is_coind => TypeError (Msg "Case on coinductives disallowed");
+          | exist false not_coind with inspect (pars =? ind_npars decl) := {
+
+           | exist false pars_neq => TypeError (Msg "Not the right number of parameters");
+           | exist true pars_eq with split_at pars args := {
+
+            | (params, indices) with infer_scheme infer Γ wfΓ p := {
+
+             | TypeError te => TypeError te;
+             | Checked (pred_ctx; pred_sort; typ_p)
+                 with check_is_allowed_elimination ps (ind_kelim body) := {
+
+              | TypeError te => TypeError te;
+              | Checked al_elim
+                  with inspect (build_case_predicate_context
+                                  ind decl body isdecl params scrut_u pars_eq) := {
+               | exist ind_ctx is_build_ctx
+                   with check_cumul_ctx Γ ind_ctx (arity_ass_context pred_ctx) _ _ := {
+
+                | TypeError te => TypeError te;
+                | Checked cum_ctx with view_indc (last_nonempty pred_ctx _) := {
+
+                 | view_ind_other t notind => False_rect _ _;
+                 | view_ind_tInd ind'' pred_u 
+            }
+           }
+          }
+         }
+        }
+       }.
+        
+      cty <- infer Γ HΓ c ;;
+      I <- reduce_to_ind HΣ Γ cty.π1 _ ;;
+      let '(ind'; I') := I in let '(scrut_inst; I'') := I' in let '(args; H) := I'' in
+      check_eq_true (eqb ind ind')
+                    (* bad case info *)
+                    (NotConvertible G Γ (tInd ind scrut_inst) (tInd ind' scrut_inst)) ;;
+      d <- lookup_ind_decl ind' ;;
+      let '(decl; d') := d in let '(body; HH) := d' in
+      check_coind <- check_eq_true (negb (isCoFinite (ind_finite decl)))
+            (Msg "Case on coinductives disallowed") ;;
+      check_eq_true (ind_npars decl =? par)
+                    (Msg "not the right number of parameters") ;;
+      IS <- infer_scheme infer Γ HΓ p ;;
+      let '(pred_ctx; IS') := IS in let '(ps; typ_p) := IS' in
+      check_is_allowed_elimination ps (ind_kelim body);;
+      let pred_ctx := arity_ass_context pctx in
+      check_cumul_ctx build_case_
+      let pty := mkAssumArity pctx ps in
+      let params := firstn par args in
+      match build_case_predicate_type ind decl body params u ps with
+      | None => raise (Msg "failure in build_case_predicate_type")
+      | Some pty' =>
+        (* We could avoid one useless sort comparison by only comparing *)
+        (* the contexts [pctx] and [indctx] (what is done in Coq). *)
+        match iscumul Γ pty _ pty' _ with
+        | ConvError e => raise (NotCumulSmaller G Γ pty pty' pty pty' e)
+        | ConvSuccess =>
+          match map_option_out (build_branches_type ind decl body params u p) with
+          | None => raise (Msg "failure in build_branches_type")
+          | Some btys =>
+            let btyswf : ∥ All (isType Σ Γ ∘ snd) btys ∥ := _ in
+            (fix check_branches (brs btys : list (nat * term))
+              (HH : ∥ All (isType Σ Γ ∘ snd) btys ∥) {struct brs}
+                : typing_result
+                  (All2 (fun br bty => br.1 = bty.1 /\ ∥ Σ ;;; Γ |- br.2 : bty.2 ∥) brs btys)
+                        := match brs, btys with
+                           | [], [] => ret All2_nil
+                           | (n, t) :: brs , (m, A) :: btys =>
+                             W <- check_dec (Msg "not nat eq")
+                                           (EqDecInstances.nat_eqdec n m) ;;
+                             Z <- infer_cumul infer Γ HΓ t A _ ;;
+                             X <- check_branches brs btys _ ;;
+                             ret (All2_cons (conj _ _) X)
+                           | [], _ :: _
+                           | _ :: _, [] => raise (Msg "wrong number of branches")
+                           end) brs btys btyswf ;;
+              ret (mkApps p (List.skipn par args ++ [c]); _)
+          end
+        end
+      end
+
+  End InferAux.
 
   Program Fixpoint infer (Γ : context) (HΓ : ∥ wf_local Σ Γ ∥) (t : term) {struct t}
     : typing_result ({ A : term & ∥ Σ ;;; Γ |- t : A ∥ }) :=

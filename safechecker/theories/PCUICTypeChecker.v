@@ -48,50 +48,50 @@ Section Typecheck.
   Definition isconv Γ := isconv_term Σ HΣ Hφ G HG Γ Conv.
   Definition iscumul Γ := isconv_term Σ HΣ Hφ G HG Γ Cumul.
   
-  Program Definition convert Γ t u
+  Program Definition convert pb Γ t u
           (ht : welltyped Σ Γ t) (hu : welltyped Σ Γ u)
+    : (ConversionError * ∥~conv_cum pb Σ Γ t u∥) + {conv_cum pb Σ Γ t u} :=
+    match eqb_termp Σ G pb t u with
+    | true => inright _
+    | false =>
+      match isconv_term Σ HΣ Hφ G HG Γ pb t ht u hu with
+      | ConvSuccess => inright _
+      | ConvError e => inleft (e, _)
+      end
+    end.
+  Next Obligation.
+    eapply eq_sym, eqb_termp_napp_spec in Heq_anonymous; auto.
+    destruct pb; constructor; constructor; auto.
+  Qed.
+  Next Obligation.
+    eapply isconv_term_sound; eauto.
+  Qed.
+  Next Obligation.
+    constructor.
+    eapply isconv_term_complete; eauto.
+  Qed.
+  
+  Definition check_convert Γ t u (ht : welltyped Σ Γ t) (hu : welltyped Σ Γ u)
     : typing_result (∥ Σ ;;; Γ |- t = u ∥) :=
-    match eqb_term Σ G t u with true => ret _ | false =>
-    match isconv Γ t ht u hu with
-    | ConvSuccess => ret _
-    | ConvError e => (* fallback *)  (* nico *)
+    match convert Conv Γ t u ht hu with
+    | inright p => ret p
+    | inleft (e, _) =>
       let t' := hnf Γ t ht in
       let u' := hnf Γ u hu in
-      (* match leq_term (snd Σ) t' u' with true => ret _ | false => *)
       raise (NotCumulSmaller G Γ t u t' u' e)
-      (* end *)
-    end end.
-  Next Obligation.
-    symmetry in Heq_anonymous; eapply eqb_term_spec in Heq_anonymous; tea.
-    constructor. now constructor.
-  Qed.
-  Next Obligation.
-    symmetry in Heq_anonymous; apply isconv_term_sound in Heq_anonymous.
-    assumption.
-  Qed.
-
-  Program Definition convert_leq Γ t u
+    end.
+  
+  Definition check_convert_leq Γ t u
           (ht : welltyped Σ Γ t) (hu : welltyped Σ Γ u)
     : typing_result (∥ Σ ;;; Γ |- t <= u ∥) :=
-    match leqb_term Σ G t u with true => ret _ | false =>
-    match iscumul Γ t ht u hu with
-    | ConvSuccess => ret _
-    | ConvError e => (* fallback *)  (* nico *)
+    match convert Cumul Γ t u ht hu with
+    | inright p => ret p
+    | inleft (e, _) =>
       let t' := hnf Γ t ht in
       let u' := hnf Γ u hu in
-      (* match leq_term (snd Σ) t' u' with true => ret _ | false => *)
       raise (NotCumulSmaller G Γ t u t' u' e)
-      (* end *)
-    end end.
-  Next Obligation.
-    symmetry in Heq_anonymous; eapply leqb_term_spec in Heq_anonymous; tea.
-    constructor. now constructor.
-  Qed.
-  Next Obligation.
-    symmetry in Heq_anonymous; apply isconv_term_sound in Heq_anonymous.
-    assumption.
-  Qed.
-
+    end.
+  
   Section InferAux.
     Variable (infer : forall Γ (HΓ : ∥ wf_local Σ Γ ∥) (t : term),
                  typing_result ({ A : term & ∥ Σ ;;; Γ |- t : A ∥ })).
@@ -112,7 +112,7 @@ Section Typecheck.
     Program Definition infer_cumul Γ HΓ t A (hA : ∥ isType Σ Γ A ∥)
       : typing_result (∥ Σ ;;; Γ |- t : A ∥) :=
       A' <- infer Γ HΓ t ;;
-      X <- convert_leq Γ A'.π1 A _ _ ;;
+      X <- check_convert_leq Γ A'.π1 A _ _ ;;
       ret _.
     Next Obligation. now eapply validity_wf. Qed.
     Next Obligation. destruct hA; now apply wat_welltyped. Qed.
@@ -279,14 +279,6 @@ Section Typecheck.
       welltyped Σ Γ ty
     end.
   
-  Definition wf_env_conv (Γ : context) (t u : term) :
-    welltyped Σ Γ t -> welltyped Σ Γ u -> typing_result (∥ Σ;;; Γ |- t = u ∥) :=
-    @convert Γ t u.
-
-  Definition wf_env_cumul (Γ : context) (t u : term) :
-    welltyped Σ Γ t -> welltyped Σ Γ u -> typing_result (∥ Σ;;; Γ |- t <= u ∥) :=
-    @convert_leq Γ t u.
-
    Program Definition check_cumul_decl Γ d d' : wt_decl Σ Γ d -> wt_decl Σ Γ d' -> typing_result (∥ cumul_decls Σ Γ Γ d d' ∥) := 
     match d, d' return wt_decl Σ Γ d -> wt_decl Σ Γ d' -> typing_result _ with
     | {| decl_name := na; decl_body := Some b; decl_type := ty |},
@@ -466,7 +458,32 @@ Section Typecheck.
         eauto.
     Qed.
     
-    Equations? build_case_predicate_context
+    Definition build_case_predicate_context
+             (ind : inductive)
+             (mdecl : mutual_inductive_body) (idecl : one_inductive_body)
+             (params : list term)
+             (u : Instance.t) : option context :=
+      inst_params <- instantiate_params (subst_instance_context u (ind_params mdecl)) params
+                                        (subst_instance_constr u (ind_type idecl));;
+      '(ctx, _) <- destArity [] inst_params;;
+      let ind_decl :=
+          vass {| binder_name := nNamed (ind_name idecl);
+                  binder_relevance := ind_relevance idecl |}
+               (mkApps (tInd ind u) (map (lift0 #|ctx|) params ++ to_extended_list ctx)) in
+      ret (ctx,, ind_decl).
+    
+    Lemma build_case_predicate_type_alt ind mdecl idecl params u ps :
+      build_case_predicate_type ind mdecl idecl params u ps =
+      option_map (fun t => it_mkProd_or_LetIn t (tSort ps))
+                 (build_case_predicate_context ind mdecl idecl params u).
+    Proof.
+      cbn.
+      destruct ?; auto.
+      destruct ?; auto.
+      destruct p; auto.
+    Qed.
+    
+    (*Equations? build_case_predicate_context
              (ind : inductive)
              (mdecl : mutual_inductive_body) (idecl : one_inductive_body)
              (isdecl : declared_inductive Σ mdecl ind idecl)
@@ -511,15 +528,57 @@ Section Typecheck.
           rewrite subst_instance_context_assumptions.
           rewrite <- (onNpars on_ind).
           auto.
-    Qed.
+    Qed.*)
     
-    Definition last_nonempty {X : Type} (xs : list X) : 0 < #|xs| -> X :=
+    (*Definition foo : typing_result (∑ (a b : nat), a = b) := ret (0; 0; eq_refl).
+*)
+    
+    Lemma build_case_predicate_type_other_instance ind mdecl idecl params u u' univ ty :
+      build_case_predicate_type ind mdecl idecl params u univ = Some ty ->
+      exists ty',
+        build_case_predicate_type ind mdecl idecl params u' univ = Some ty'.
+    Proof.
+      Admitted.
+    
+    (*
+    Definition head_nonempty {X : Type} (xs : list X) : 0 < #|xs| -> X :=
       match xs with
       | [] => fun ne => ltac:(exfalso; inversion ne)
-      | x :: xs => fun _ => last xs x
+      | x :: xs => fun _ => x
       end.
+*)
+    Inductive PropBool : Prop := PTrue | PFalse.
     
-    Equations? infer_case
+    Inductive Container (p : PropBool) : Prop :=
+    | ctor.
+    
+    
+    Import VectorDef.
+    Import VectorNotations.
+    Fixpoint remove_last {X} {n : nat} (v : Vector.t X (S n)) {struct v} : Vector.t X n.
+      (*match v in Vector.t _ (S n) return Vector.t X n with
+      | x :: xs =>
+        match xs in Vector.t _ n' return Vector.t X n' with
+        | [] => []
+        | x' :: xs' => x :: remove_last (x' :: xs')
+        end
+      end.*)
+      refine (
+      match v in Vector.t _ (S n) return Vector.t X n with
+      | cons x n' xs =>
+        match xs in Vector.t _ n'' return Vector.t X n'' with
+        | nil => []
+        | cons x' n''' xs' => x :: remove_last _ _ (x' :: xs')
+        end
+      end).
+    Defined.
+      exact (remove_last _ _ (x' :: xs')).
+    
+    Definition f (T : Type) (t : T) := ContainerType.
+    
+    
+    
+    Equations? (noeqns) infer_case
              (Γ : context) (wfΓ : ∥ wf_local Σ Γ ∥)
              (ind : inductive)
              (pars : nat)
@@ -536,38 +595,144 @@ Section Typecheck.
         | exist true ind_eq with lookup_ind_decl ind := {
 
          | TypeError te => TypeError te;
-         | Checked (decl; body; isdecl) with inspect (isCoFinite (ind_finite decl)) := {
+         | Checked (mdecl; idecl; isdecl) with inspect (isCoFinite (ind_finite mdecl)) := {
 
           | exist true is_coind => TypeError (Msg "Case on coinductives disallowed");
-          | exist false not_coind with inspect (pars =? ind_npars decl) := {
+          | exist false not_coind with inspect (pars =? ind_npars mdecl) := {
 
            | exist false pars_neq => TypeError (Msg "Not the right number of parameters");
-           | exist true pars_eq with split_at pars args := {
+           | exist true pars_eq with inspect (split_at pars args) := {
 
-            | (params, indices) with infer_scheme infer Γ wfΓ p := {
+            | exist (params, indices) is_split with infer_scheme Γ wfΓ p := {
 
              | TypeError te => TypeError te;
-             | Checked (pred_ctx; pred_sort; typ_p)
-                 with check_is_allowed_elimination ps (ind_kelim body) := {
+             | Checked (pred_ctx_ass; pred_sort; typ_p)
+                 with check_is_allowed_elimination pred_sort (ind_kelim idecl) := {
 
               | TypeError te => TypeError te;
               | Checked al_elim
-                  with inspect (build_case_predicate_context
-                                  ind decl body isdecl params scrut_u pars_eq) := {
-               | exist ind_ctx is_build_ctx
-                   with check_cumul_ctx Γ ind_ctx (arity_ass_context pred_ctx) _ _ := {
+                  with inspect (arity_ass_context pred_ctx_ass) := {
 
-                | TypeError te => TypeError te;
-                | Checked cum_ctx with view_indc (last_nonempty pred_ctx _) := {
+               | exist pred_ctx eq_arity_ass_ctx
+                   with inspect (build_case_predicate_context ind mdecl idecl params scrut_u) := {
 
-                 | view_ind_other t notind => False_rect _ _;
-                 | view_ind_tInd ind'' pred_u 
+                | exist None eq_build_pred_ctx =>
+                   TypeError (Msg "Discriminee is not applied to enough parameters");
+                             
+                | exist (Some built_ctx) is_built_ctx
+                     with check_cumul_ctx Γ built_ctx pred_ctx _ _ := {
+
+                 | TypeError te => TypeError te;
+                 | Checked cum_ctx with pred_ctx := {
+
+                  | [] => False_rect _ _;
+                  | (mkdecl pred_ind_dname pred_ind_dbody pred_ind_dtype) :: pred_ctx_indices
+                      with view_indc pred_ind_dtype := {
+                   
+                   | view_ind_other _ notind => False_rect _ _;
+                   | view_ind_tInd ind'' pred_u
+                       with inspect (map_option_out
+                                       (build_branches_type ind mdecl idecl params pred_u p)) := {
+
+                    | exist None is_branches => False_rect _ _;
+                    | exist (Some btys) is_branches => ret ((tApp (mkApps p indices) c); _)
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
             }
            }
           }
          }
         }
        }.
+    Proof.
+      all: try apply eq_sym, eqb_eq in ind_eq as <-.
+      all: try (symmetry in pars_eq; apply Nat.eqb_eq in pars_eq as ->).
+      all: try rewrite split_at_firstn_skipn in is_split; noconf is_split.
+      - apply (f_equal (option_map (fun t => it_mkProd_or_LetIn t (tSort pred_sort))))
+          in is_built_ctx; cbn -[build_case_predicate_context] in *.
+        rewrite <- build_case_predicate_type_alt in is_built_ctx.
+        enough (welltyped Σ Γ (it_mkProd_or_LetIn built_ctx (tSort pred_sort))) as (?&typ).
+        { sq; eapply it_mkProd_or_LetIn_wf_local; eauto. }
+        sq.
+        eapply eq_sym, PCUICInductiveInversion.WfArity_build_case_predicate_type
+          in is_built_ctx; eauto; cycle 1.
+        + eapply validity; eauto.
+        + eapply validity in typ_p; auto.
+          rewrite mkAssumArity_alt in typ_p.
+          eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in typ_p; eauto.
+          eapply isType_wf_universes in typ_p; auto.
+          now exact (elimT wf_universe_reflect typ_p).
+        + destruct is_built_ctx as (?&?).
+          apply isType_welltyped; auto.
+      - sq.
+        rewrite mkAssumArity_alt in typ_p.
+        eapply validity in typ_p as (?&typ); auto.
+        eapply it_mkProd_or_LetIn_wf_local; eauto.
+      - destruct cum_ctx as [cum_ctx].
+        depelim cum_ctx.
+        unfold build_case_predicate_context in *.
+        destruct instantiate_params; [|discriminate].
+        cbn in *.
+        destruct destArity as [(?&?)|]; [|discriminate].
+        noconf is_built_ctx.
+      - rewrite tApp_mkApps.
+        apply (f_equal (option_map (fun t => it_mkProd_or_LetIn t (tSort pred_sort))))
+          in is_built_ctx; cbn -[build_case_predicate_context] in *.
+        rewrite <- build_case_predicate_type_alt in is_built_ctx.
+        (*eapply eq_sym, build_case_predicate_type_other_instance with (u' := pred_u)
+          in is_built_ctx as (ty'&build_other).*)
+        rewrite mkAssumArity_alt -eq_arity_ass_ctx in typ_p.
+        sq.
+        apply sq in typ_p.
+        eapply type_Case with (u := pred_u); eauto.
+        Σ;;; Γ |- p : build_case_predicate_type ind mdecl idecl params pred_u pred_sort
+        + eapply type_Cumul; eauto.
+          apply type_it_mkProd_or_LetIn; auto.
+Lemma build_case_predicate_type_other_instance ind mdecl idecl params u u' univ ty :
+  R_global_instance Σ (eq_universe Σ) (leq_universe Σ) (IndRef ind) #|params| u u' ->
+  build_case_predicate_type ind mdecl idecl params u univ = Some ty ->
+  ∑ ty',
+    build_case_predicate_type ind mdecl idecl params u' univ = Some ty'
+    × Σ;;; Γ |-
+
+Lemma build_case_predicate_type_other_instance
+PCUICCanonicity.invert_cumul_ind_ind
+        + rewrite mkAssumArity_alt -eq_arity_ass_ctx in typ_p.
+          destruct typ_p
+          cbn in typ_p.
+          unfold build_case_predicate_type, build_case_predicate_context in *.
+          cbn.
+          rewrite subst_instance_instantiate_params
+          destruct instantiate_params; [|discriminate].
+        + eauto.
+        + 
+          apply (f_equal (option_map (fun t => it_mkProd_or_LetIn t (tSort pred_sort))))
+            in eq_build_pred_ctx; cbn -[build_case_predicate_context build_case_predicate_type] in *.
+          rewrite <- build_case_predicate_type_alt in eq_build_pred_ctx.
+        apply (f_equal (option_map (fun t => it_mkProd_or_LetIn t (tSort pred_sort))))
+          in eq_build_pred_ctx; cbn -[build_case_predicate_context] in *.
+        rewrite <- build_case_predicate_type_alt in eq_build_pred_ctx.
+        enough (welltyped Σ Γ (it_mkProd_or_LetIn ind_ctx (tSort pred_sort))) as (?&typ).
+        { sq; eapply it_mkProd_or_LetIn_wf_local; eauto. }
+        sq.
+        eapply eq_sym, PCUICInductiveInversion.WfArity_build_case_predicate_type in eq_build_pred_ctx; eauto; cycle 1.
+        + eapply validity; eauto.
+        + eapply validity in typ_p; auto.
+          rewrite mkAssumArity_alt in typ_p.
+          eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in typ_p; eauto.
+          eapply isType_wf_universes in typ_p; auto.
+          now exact (elimT wf_universe_reflect typ_p).
+        + destruct eq_build_pred_ctx as (?&?).
+          apply isType_welltyped; auto.
+
+
+        
         
       cty <- infer Γ HΓ c ;;
       I <- reduce_to_ind HΣ Γ cty.π1 _ ;;
@@ -618,9 +783,11 @@ Section Typecheck.
               ret (mkApps p (List.skipn par args ++ [c]); _)
           end
         end
-      end
+      end*)
 
   End InferAux.
+
+  Obligation Tactic := Program.Tactics.program_simplify ; eauto 2.
 
   Program Fixpoint infer (Γ : context) (HΓ : ∥ wf_local Σ Γ ∥) (t : term) {struct t}
     : typing_result ({ A : term & ∥ Σ ;;; Γ |- t : A ∥ }) :=
@@ -688,10 +855,10 @@ Section Typecheck.
     | tCase (ind, par) p c brs =>
       cty <- infer Γ HΓ c ;;
       I <- reduce_to_ind HΣ Γ cty.π1 _ ;;
-      let '(ind'; I') := I in let '(scrut_inst; I'') := I' in let '(args; H) := I'' in
+      let '(ind'; I') := I in let '(u; I'') := I' in let '(args; H) := I'' in
       check_eq_true (eqb ind ind')
                     (* bad case info *)
-                    (NotConvertible G Γ (tInd ind scrut_inst) (tInd ind' scrut_inst)) ;;
+                    (NotConvertible G Γ (tInd ind u) (tInd ind' u)) ;;
       d <- lookup_ind_decl ind' ;;
       let '(decl; d') := d in let '(body; HH) := d' in
       check_coind <- check_eq_true (negb (isCoFinite (ind_finite decl)))
@@ -699,10 +866,8 @@ Section Typecheck.
       check_eq_true (ind_npars decl =? par)
                     (Msg "not the right number of parameters") ;;
       IS <- infer_scheme infer Γ HΓ p ;;
-      let '(pred_ctx; IS') := IS in let '(ps; typ_p) := IS' in
+      let '(pctx; IS') := IS in let '(ps; typ_p) := IS' in
       check_is_allowed_elimination ps (ind_kelim body);;
-      let pred_ctx := arity_ass_context pctx in
-      check_cumul_ctx build_case_
       let pty := mkAssumArity pctx ps in
       let params := firstn par args in
       match build_case_predicate_type ind decl body params u ps with
@@ -912,7 +1077,7 @@ Section Typecheck.
     destruct HH as [[s Hs] ?]. eexists; eauto.
     eapply isType_red; [|eassumption].
     eapply validity; eauto.
-    rewrite mkAssumArity_it_mkProd_or_LetIn in X.
+    rewrite mkAssumArity_alt in X.
     eapply validity in X; auto.
     eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in X; eauto.
     eapply isType_wf_universes in X; auto.
@@ -939,7 +1104,7 @@ Section Typecheck.
     eapply type_Cumul' in typ_p; [| |eassumption].
     2:{ eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
         eapply validity in typ_p; eauto.
-        rewrite mkAssumArity_it_mkProd_or_LetIn in typ_p.
+        rewrite mkAssumArity_alt in typ_p.
         eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in typ_p; eauto.
         apply isType_wf_universes in typ_p; auto.
         now exact (elimT wf_universe_reflect typ_p). }
@@ -986,7 +1151,7 @@ Section Typecheck.
     2:{ eapply PCUICInductiveInversion.WfArity_build_case_predicate_type; eauto.
         eapply validity in X11; eauto.
         eapply validity in typ_p; auto.
-        rewrite mkAssumArity_it_mkProd_or_LetIn in typ_p.
+        rewrite mkAssumArity_alt in typ_p.
         eapply PCUICInductives.isType_it_mkProd_or_LetIn_inv in typ_p; eauto.
         apply isType_wf_universes in typ_p; auto.
         now exact (elimT wf_universe_reflect typ_p). }

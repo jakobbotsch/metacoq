@@ -1906,7 +1906,7 @@ Section ReduceFns.
       constructor; auto.
   Qed.
   
-  Lemma mkAssumArity_it_mkProd_or_LetIn (l : list arity_ass) (s : Universe.t) :
+  Lemma mkAssumArity_alt (l : list arity_ass) (s : Universe.t) :
     mkAssumArity l s = it_mkProd_or_LetIn (arity_ass_context l) (tSort s).
   Proof.
     unfold arity_ass_context.
